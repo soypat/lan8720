@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"machine"
 	"time"
 
@@ -104,7 +105,7 @@ func main() {
 				println("pcap format failed: ", err.Error())
 			}
 			printdata = append(printdata, '\n')
-			machine.Serial.Write(printdata)
+			serialWrite(printdata)
 		}
 		if time.Since(lastSend) > time.Second {
 			lastSend = time.Now()
@@ -165,6 +166,21 @@ func putTestFrame(dst []byte, seq uint16) int {
 	var crc lneto.CRC791
 	icmp.CRCWrite(&crc)
 	icmp.SetCRC(crc.Sum16())
+	plen := ethHeaderLen + ipTotalLen
+	crcEth := ethernet.CRC32(dst[:plen])
+	binary.LittleEndian.PutUint32(dst[plen:], crcEth)
+	return plen + 4
+}
 
-	return ethHeaderLen + ipTotalLen
+func serialWrite(b []byte) {
+	const chunkSize = 256
+	const sleep = 30 * time.Millisecond
+	for len(b) > 0 {
+		n := min(len(b), chunkSize)
+		machine.Serial.Write(b[:n])
+		b = b[n:]
+		if len(b) > 0 {
+			time.Sleep(sleep)
+		}
+	}
 }
