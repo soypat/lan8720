@@ -141,13 +141,14 @@ func (stack *Stack) RecvAndSend() (send, recv int, err error) {
 		return send, recv, nil
 	}
 
+	if stack.enableTxPcap {
+		stack.printPcap("TX", stack.sendbuf[:send])
+	}
+
 	// Send the packet.
 	err = dev.SendFrame(stack.sendbuf[:send])
 	if err != nil {
 		stack.logerr("RecvAndSend:SendFrame", slog.Int("plen", send), slog.String("err", err.Error()))
-	}
-	if stack.enableTxPcap && err == nil {
-		stack.printPcap("TX", stack.sendbuf[:send])
 	}
 	return send, recv, err
 }

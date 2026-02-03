@@ -68,10 +68,10 @@ func (p *picoRMIISingle) InRx() bool {
 // RMII state machines for frame transmission and reception.
 func NewPicoLAN8720Single(cfg PicoConfig) (*DeviceSingle, error) {
 	mdiomsk := (1 << cfg.MDC) | (1 << cfg.MDIO)
-	// clkmsk := (1 << pinRefClk)
+	clkmsk := (1 << cfg.TxConfig.RefClk)
 	txmsk := 0b111 << cfg.TxConfig.TxBase
 	rxmsk := 0b111 << cfg.RxConfig.RxBase
-	aliased := rxmsk & txmsk & mdiomsk //& clkmsk
+	aliased := rxmsk & txmsk & mdiomsk & clkmsk
 	if aliased != 0 {
 		return nil, errors.New("aliased pins, check pin definitions")
 	}

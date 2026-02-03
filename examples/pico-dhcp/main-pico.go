@@ -39,7 +39,7 @@ var (
 )
 
 func main() {
-	time.Sleep(2 * time.Second) // Give time to connect to USB and monitor output.
+	time.Sleep(1 * time.Second) // Give time to connect to USB and monitor output.
 	println("starting program")
 	logger := slog.New(slog.NewTextHandler(machine.Serial, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
@@ -58,6 +58,7 @@ func main() {
 			Baud:     uint32(baud),
 			TxBuffer: make([]byte, lannet.MFU),
 			TxBase:   pinTxBase,
+			RefClk:   pinRefClk,
 		},
 		RxConfig: piolib.RMIIRxConfig{
 			Baud:           uint32(baud),
@@ -94,8 +95,8 @@ func main() {
 	go loopForeverStack(stack)
 
 	const (
-		timeout  = 6 * time.Second
-		retries  = 3
+		timeout  = 100 * time.Millisecond
+		retries  = 100
 		pollTime = 5 * time.Millisecond
 	)
 	llstack := stack.LnetoStack()
