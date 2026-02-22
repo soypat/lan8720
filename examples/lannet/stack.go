@@ -60,7 +60,10 @@ func NewStack(dev *lan8720.DeviceSingle, mac [6]byte, cfg StackConfig) (*Stack, 
 		enableTxPcap: cfg.EnableTxPcapPrint,
 	}
 	if cfg.EnableRxPcapPrint || cfg.EnableTxPcapPrint {
-		stack.pcap.Configure(serialWriter{}, xnet.CapturePrinterConfig{})
+		stack.pcap.Configure(serialWriter{}, xnet.CapturePrinterConfig{
+			TimePrecision: 3,
+			Now:           time.Now,
+		})
 	}
 
 	// Configure networking stack.

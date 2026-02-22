@@ -47,8 +47,7 @@ var (
 	//go:embed index.html
 	webPage []byte
 
-	// Static IP configuration.
-	reqIP = netip.AddrFrom4([4]byte{192, 168, 1, 99})
+	requestedIP = [4]byte{192, 168, 1, 99}
 
 	lastLedState bool
 )
@@ -97,7 +96,6 @@ func main() {
 	mac := [6]byte{0x02, 0x00, 0x00, 0x00, 0x00, 0x01}
 
 	stack, err := lannet.NewStack(dev, mac, lannet.StackConfig{
-		StaticAddress:     reqIP,
 		Hostname:          "http-pico",
 		MaxTCPPorts:       1,
 		Logger:            logger,
@@ -110,11 +108,37 @@ func main() {
 
 	go loopForeverStack(stack)
 
+	const (
+		dhcpTimeout = 7000 * time.Millisecond
+		dhcpRetries = 3
+		pollTime    = 5 * time.Millisecond
+	)
+	llstack := stack.LnetoStack()
+	rstack := llstack.StackRetrying(pollTime)
+	results, err := rstack.DoDHCPv4(requestedIP, dhcpTimeout, dhcpRetries)
+	if err != nil {
+		panic("DHCP failed: " + err.Error())
+	}
+	err = llstack.AssimilateDHCPResults(results)
+	if err != nil {
+		panic("DHCP result assimilate failed: " + err.Error())
+	}
+	gatewayHW, err := rstack.DoResolveHardwareAddress6(results.Router, 500*time.Millisecond, 4)
+	if err != nil {
+		panic("ARP resolve failed: " + err.Error())
+	}
+	llstack.SetGateway6(gatewayHW)
+	logger.Info("DHCP complete",
+		slog.String("ourIP", results.AssignedAddr.String()),
+		slog.String("router", results.Router.String()),
+		slog.String("gatewayhw", net.HardwareAddr(gatewayHW[:]).String()),
+	)
+
 	tcpPool, err := xnet.NewTCPPool(xnet.TCPPoolConfig{
 		PoolSize:           maxConns,
 		QueueSize:          3,
 		TxBufSize:          len(webPage) + 128,
-		RxBufSize:          256,
+		RxBufSize:          1024,
 		EstablishedTimeout: 5 * time.Second,
 		ClosingTimeout:     5 * time.Second,
 		NewUserData: func() any {
@@ -128,15 +152,14 @@ func main() {
 		panic("tcppool create: " + err.Error())
 	}
 
-	lstack := stack.LnetoStack()
-	listenAddr := netip.AddrPortFrom(reqIP, listenPort)
+	listenAddr := netip.AddrPortFrom(results.AssignedAddr, listenPort)
 
 	var listener tcp.Listener
 	err = listener.Reset(listenPort, tcpPool)
 	if err != nil {
 		panic("listener reset: " + err.Error())
 	}
-	err = lstack.RegisterListener(&listener)
+	err = llstack.RegisterListener(&listener)
 	if err != nil {
 		panic("listener register: " + err.Error())
 	}
