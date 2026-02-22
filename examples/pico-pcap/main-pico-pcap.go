@@ -164,8 +164,8 @@ func putTestFrame(dst []byte, seq uint16) int {
 	}
 	// Calculate ICMP checksum.
 	var crc lneto.CRC791
-	icmp.CRCWrite(&crc)
-	icmp.SetCRC(crc.Sum16())
+	icmpCRC := crc.PayloadSum16(ifrm.Payload())
+	icmp.SetCRC(icmpCRC)
 	plen := ethHeaderLen + ipTotalLen
 	crcEth := ethernet.CRC32(dst[:plen])
 	binary.LittleEndian.PutUint32(dst[plen:], crcEth)

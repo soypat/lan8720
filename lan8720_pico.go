@@ -31,7 +31,7 @@ type PicoConfig struct {
 
 // picoRMIISingle adapts piolib.RMIITx and piolib.RMIIRx to the RMIISingle interface.
 type picoRMIISingle struct {
-	tx piolib.RMIITx
+	tx piolib.RMIITxExtClk
 	rx piolib.RMIIRx
 }
 

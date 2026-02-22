@@ -12,7 +12,6 @@ import (
 
 	"github.com/soypat/lan8720"
 	"github.com/soypat/lneto/ethernet"
-	"github.com/soypat/lneto/internet/pcap"
 	"github.com/soypat/lneto/x/xnet"
 )
 
@@ -30,10 +29,7 @@ type Stack struct {
 	rxbuf   []byte
 	rxgot   int
 	// pcap fields for packet capture printing.
-	pc           pcap.PacketBreakdown
-	pcfmt        pcap.Formatter
-	frms         []pcap.Frame
-	printdata    []byte
+	pcap         xnet.CapturePrinter
 	enableRxPcap bool
 	enableTxPcap bool
 }
@@ -62,6 +58,9 @@ func NewStack(dev *lan8720.DeviceSingle, mac [6]byte, cfg StackConfig) (*Stack, 
 		rxbuf:        make([]byte, MFU),
 		enableRxPcap: cfg.EnableRxPcapPrint,
 		enableTxPcap: cfg.EnableTxPcapPrint,
+	}
+	if cfg.EnableRxPcapPrint || cfg.EnableTxPcapPrint {
+		stack.pcap.Configure(serialWriter{}, xnet.CapturePrinterConfig{})
 	}
 
 	// Configure networking stack.
@@ -154,21 +153,7 @@ func (stack *Stack) RecvAndSend() (send, recv int, err error) {
 }
 
 func (stack *Stack) printPcap(direction string, data []byte) {
-	var perr error
-	stack.printdata = append(stack.printdata[:0], direction...)
-	stack.printdata = append(stack.printdata, ": "...)
-	stack.frms, perr = stack.pc.CaptureEthernet(stack.frms[:0], data, 0)
-	if perr != nil {
-		println(direction, "pcap failed:", perr.Error())
-		return
-	}
-	stack.printdata, perr = stack.pcfmt.FormatFrames(stack.printdata, stack.frms, data)
-	if perr != nil {
-		println(direction, "pcap format failed:", perr.Error())
-		return
-	}
-	stack.printdata = append(stack.printdata, '\n')
-	serialWrite(stack.printdata)
+	stack.pcap.PrintPacket(direction, data)
 }
 
 func (stack *Stack) logerr(msg string, attrs ...slog.Attr) {
@@ -177,9 +162,12 @@ func (stack *Stack) logerr(msg string, attrs ...slog.Attr) {
 	}
 }
 
-func serialWrite(b []byte) {
+type serialWriter struct{}
+
+func (serialWriter) Write(b []byte) (int, error) {
 	const chunkSize = 256
 	const sleep = 30 * time.Millisecond
+	total := len(b)
 	for len(b) > 0 {
 		n := min(len(b), chunkSize)
 		machine.Serial.Write(b[:n])
@@ -188,4 +176,5 @@ func serialWrite(b []byte) {
 			time.Sleep(sleep)
 		}
 	}
+	return total, nil
 }

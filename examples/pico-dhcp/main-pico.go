@@ -70,7 +70,7 @@ func main() {
 	if err != nil {
 		panic("lan8720 config: " + err.Error())
 	}
-	link, err := dev.WaitAutoNegotiation(2 * time.Second)
+	link, err := dev.WaitAutoNegotiation(5 * time.Second)
 	if err != nil {
 		panic("waiting for auto neg: " + err.Error())
 	}
@@ -95,8 +95,8 @@ func main() {
 	go loopForeverStack(stack)
 
 	const (
-		timeout  = 100 * time.Millisecond
-		retries  = 100
+		timeout  = 7000 * time.Millisecond
+		retries  = 3
 		pollTime = 5 * time.Millisecond
 	)
 	llstack := stack.LnetoStack()
@@ -104,6 +104,10 @@ func main() {
 	results, err := rstack.DoDHCPv4(requestedIP, timeout, retries)
 	if err != nil {
 		panic("DHCP failed: " + err.Error())
+	}
+	err = stack.LnetoStack().AssimilateDHCPResults(results)
+	if err != nil {
+		panic("DHCP result assimilate failed: " + err.Error())
 	}
 	gatewayHW, err := rstack.DoResolveHardwareAddress6(results.Router, 500*time.Millisecond, 4)
 	if err != nil {

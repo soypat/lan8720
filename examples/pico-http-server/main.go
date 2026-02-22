@@ -34,6 +34,9 @@ const (
 	// MDIO pins:
 	pinMDIO = machine.GPIO0
 	pinMDC  = machine.GPIO1
+	// Reference clock: (50MHz from PHY)
+	// Mistakenly spelled as Retclk on breakout.
+	pinRefClk = machine.GPIO2
 	// RX pins: GPIO 3, 4, 5 (RXD0, RXD1, CRS_DV)
 	pinRxBase = machine.GPIO3
 	// TX pins: GPIO 7, 8, 9 (TXD0, TXD1, TX_EN)
@@ -45,7 +48,7 @@ var (
 	webPage []byte
 
 	// Static IP configuration.
-	staticIP = netip.AddrFrom4([4]byte{192, 168, 1, 50})
+	reqIP = netip.AddrFrom4([4]byte{192, 168, 1, 99})
 
 	lastLedState bool
 )
@@ -73,6 +76,7 @@ func main() {
 			Baud:     uint32(baud),
 			TxBuffer: make([]byte, lannet.MFU),
 			TxBase:   pinTxBase,
+			RefClk:   pinRefClk,
 		},
 		RxConfig: piolib.RMIIRxConfig{
 			Baud:           uint32(baud),
@@ -84,7 +88,7 @@ func main() {
 	if err != nil {
 		panic("lan8720 config: " + err.Error())
 	}
-	link, err := dev.WaitAutoNegotiation(2 * time.Second)
+	link, err := dev.WaitAutoNegotiation(5 * time.Second)
 	if err != nil {
 		panic("waiting for auto neg: " + err.Error())
 	}
@@ -93,7 +97,7 @@ func main() {
 	mac := [6]byte{0x02, 0x00, 0x00, 0x00, 0x00, 0x01}
 
 	stack, err := lannet.NewStack(dev, mac, lannet.StackConfig{
-		StaticAddress:     staticIP,
+		StaticAddress:     reqIP,
 		Hostname:          "http-pico",
 		MaxTCPPorts:       1,
 		Logger:            logger,
@@ -125,7 +129,7 @@ func main() {
 	}
 
 	lstack := stack.LnetoStack()
-	listenAddr := netip.AddrPortFrom(staticIP, listenPort)
+	listenAddr := netip.AddrPortFrom(reqIP, listenPort)
 
 	var listener tcp.Listener
 	err = listener.Reset(listenPort, tcpPool)
