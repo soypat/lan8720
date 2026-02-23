@@ -12,7 +12,7 @@ button:disabled{opacity:.5}ul{list-style:none;padding:0;margin:12px 0 0}li{color
 </head>
 <body><div class="c">
 <h1>Pico Ethernet</h1>
-<div><input id="cs" type="text" maxlength="4" placeholder="Callsign"><button id="b" onclick="t()">Toggle LED</button></div>
+<form onsubmit="t();return false"><input id="cs" type="text" maxlength="4" placeholder="Callsign" autofocus><button id="b">Toggle LED</button></form>
 <!--A--></div>
 <script>function t(){var b=document.getElementById("b");b.disabled=true;var x=new XMLHttpRequest();x.open("GET","/toggle-led?callsign="+encodeURIComponent(document.getElementById("cs").value));x.onloadend=function(){location.href="/"};x.send()}</script>
 </body>
