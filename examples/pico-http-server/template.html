@@ -1,33 +1,19 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-	<meta charset="UTF-8">
-	<meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<title>Pico Ethernet</title>
-	<style>
-		body {
-			font-family: 'Arial', sans-serif;
-			background-color: #f4f4f4;
-			margin: 0;
-			padding: 0;
-			display: flex;
-			align-items: center;
-			justify-content: center;
-			height: 100vh;
-		}
-
-		.container {
-			text-align: center;
-		}
-
-		h1 {
-			color: #333;
-		}
-
-		p {
-			color: #666;
-		}
-	</style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pico Ethernet</title>
+<style>
+body{font-family:Arial,sans-serif;background:#f4f4f4;margin:0;padding:20px;display:flex;align-items:center;justify-content:center;min-height:100vh}
+.c{text-align:center}h1{color:#333;margin:0 0 12px}input,button{padding:6px;margin:4px}
+button:disabled{opacity:.5}ul{list-style:none;padding:0;margin:12px 0 0}li{color:#555;margin:2px 0}
+</style>
 </head>
-<body></body>
+<body><div class="c">
+<h1>Pico Ethernet</h1>
+<div><input id="cs" type="text" maxlength="4" placeholder="Callsign"><button id="b" onclick="t()">Toggle LED</button></div>
+<!--A--></div>
+<script>function t(){var b=document.getElementById("b");b.disabled=true;var x=new XMLHttpRequest();x.open("GET","/toggle-led?callsign="+encodeURIComponent(document.getElementById("cs").value));x.onloadend=function(){location.href="/"};x.send()}</script>
+</body>
 </html>

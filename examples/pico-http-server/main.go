@@ -10,6 +10,7 @@ import (
 	"machine"
 	"net"
 	"net/netip"
+	"runtime"
 	"strconv"
 	"sync"
 	"time"
@@ -31,7 +32,7 @@ const (
 	listenPort = 80
 	loopSleep  = 5 * time.Millisecond
 	maxConns   = 3
-	httpBuf    = 512
+	httpBuf    = 1024
 
 	// MDIO pins:
 	pinMDIO = machine.GPIO0
@@ -45,14 +46,17 @@ const (
 	pinTxBase = machine.GPIO7
 )
 
-const bodyStr = "<body>"
+const (
+	actionMarker = "<!--A-->"
+	ntpHost      = "pool.ntp.org"
+)
 
 var (
 
 	//go:embed template.html
-	htmlTemplate        []byte
-	htmlTemplateBodyIdx = bytes.Index(htmlTemplate, []byte(bodyStr)) + len(bodyStr)
-	requestedIP         = [4]byte{192, 168, 1, 99}
+	htmlTemplate  []byte
+	htmlActionIdx = bytes.Index(htmlTemplate, []byte(actionMarker)) + len(actionMarker)
+	requestedIP   = [4]byte{192, 168, 1, 99}
 )
 
 func main() {
@@ -137,10 +141,31 @@ func main() {
 		slog.String("gatewayhw", net.HardwareAddr(gatewayHW[:]).String()),
 	)
 
+	// DNS lookup for NTP server.
+	logger.Info("resolving NTP host", slog.String("host", ntpHost))
+	addrs, err := rstack.DoLookupIP(ntpHost, 5*time.Second, 3)
+	if err != nil {
+		panic("DNS lookup failed: " + err.Error())
+	}
+	logger.Info("DNS resolved", slog.String("addr", addrs[0].String()))
+
+	// Perform NTP request.
+	logger.Info("starting NTP request")
+	offset, err := rstack.DoNTP(addrs[0], 5*time.Second, 3)
+	if err != nil {
+		panic("NTP failed: " + err.Error())
+	}
+	now := time.Now().Add(offset)
+	logger.Info("NTP complete",
+		slog.String("time", now.String()),
+		slog.Duration("offset", offset),
+	)
+	runtime.AdjustTimeOffset(int64(offset))
+
 	tcpPool, err := xnet.NewTCPPool(xnet.TCPPoolConfig{
 		PoolSize:           maxConns,
 		QueueSize:          3,
-		TxBufSize:          len(htmlTemplate) + 128,
+		TxBufSize:          len(htmlTemplate) + 512,
 		RxBufSize:          1024,
 		EstablishedTimeout: 5 * time.Second,
 		ClosingTimeout:     5 * time.Second,
@@ -198,23 +223,117 @@ const (
 // performed. Every time a new action is performed it replaces the oldest action by advancing the ring buffer.
 type ServerState struct {
 	mu            sync.Mutex
-	ActionRingBuf [8]Action
+	ActionRingBuf [16]Action
 	LastAction    int
 	LEDState      bool
 }
 
 type Action struct {
 	Time        time.Time
-	Callsign    []byte
+	Callsign    [9]byte // fits max "(unknown)".
+	CallsignLen uint8
 	TurnedLEDOn bool
 }
 
 var state ServerState
 
+func (s *ServerState) RecordToggle(callsign []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.LEDState = !s.LEDState
+	machine.LED.Set(s.LEDState)
+	idx := s.LastAction % len(s.ActionRingBuf)
+	a := &s.ActionRingBuf[idx]
+	a.Time = time.Now()
+	a.TurnedLEDOn = s.LEDState
+	n := copy(a.Callsign[:], callsign)
+	a.CallsignLen = uint8(n)
+	s.LastAction++
+}
+
+func (s *ServerState) AppendActionsHTML(buf []byte) []byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	count := s.LastAction
+	if count > len(s.ActionRingBuf) {
+		count = len(s.ActionRingBuf)
+	}
+	if count == 0 {
+		return buf
+	}
+	now := time.Now()
+	buf = append(buf, "<ul>"...)
+	for i := 0; i < count; i++ {
+		idx := (s.LastAction - 1 - i) % len(s.ActionRingBuf)
+		a := &s.ActionRingBuf[idx]
+		buf = append(buf, "<li>"...)
+		buf = append(buf, a.Callsign[:a.CallsignLen]...)
+		if a.TurnedLEDOn {
+			buf = append(buf, " turned led on "...)
+		} else {
+			buf = append(buf, " turned led off "...)
+		}
+		buf = appendDurationAgo(buf, now.Sub(a.Time))
+		buf = append(buf, "</li>"...)
+	}
+	buf = append(buf, "</ul>"...)
+	return buf
+}
+
+func appendDurationAgo(dst []byte, d time.Duration) []byte {
+	var val int64
+	var unit byte
+	sec := int64(d / time.Second)
+	switch {
+	case sec < 60:
+		val, unit = sec, 's'
+	case sec < 3600:
+		val, unit = sec/60, 'm'
+	case sec < 86400:
+		val, unit = sec/3600, 'h'
+	default:
+		val, unit = sec/86400, 'd'
+	}
+	dst = strconv.AppendInt(dst, val, 10)
+	dst = append(dst, unit)
+	dst = append(dst, " ago "...)
+	return dst
+}
+
+func parseCallsignValue(query []byte) []byte {
+	const key = "callsign="
+	idx := bytes.Index(query, []byte(key))
+	if idx < 0 || (idx > 0 && query[idx-1] != '&') {
+		return nil
+	}
+	val := query[idx+len(key):]
+	if end := bytes.IndexByte(val, '&'); end >= 0 {
+		val = val[:end]
+	}
+	return val
+}
+
+func sanitizeCallsign(dst, raw []byte) []byte {
+	dst = dst[:0]
+	for _, b := range raw {
+		if (b < 'A' || b > 'Z') && (b < 'a' || b > 'z') {
+			break
+		}
+		dst = append(dst, b)
+		if len(dst) >= 4 {
+			break
+		}
+	}
+	if len(dst) == 0 {
+		dst = append(dst, "(unknown)"...)
+	}
+	return dst
+}
+
 func handleConn(conn *tcp.Conn, hdr *httpraw.Header) {
 	defer conn.Close()
 	const AsRequest = false
-	var buf [64]byte
+	var buf [128]byte
 	hdr.Reset(nil)
 
 	remoteAddr, _ := netip.AddrFromSlice(conn.RemoteAddr())
@@ -242,17 +361,25 @@ func handleConn(conn *tcp.Conn, hdr *httpraw.Header) {
 		}
 	}
 
-	var requestedPage page
 	uri := hdr.RequestURI()
-	switch string(uri) {
+	uriPath := uri
+	var uriQuery []byte
+	if qIdx := bytes.IndexByte(uri, '?'); qIdx >= 0 {
+		uriPath = uri[:qIdx]
+		uriQuery = uri[qIdx+1:]
+	}
+
+	var requestedPage page
+	switch string(uriPath) {
 	case "/":
 		println("Got webpage request!")
 		requestedPage = pageLanding
 	case "/toggle-led":
 		println("got toggle led request")
 		requestedPage = pageToggleLED
-		state.LEDState = !state.LEDState
-		machine.LED.Set(state.LEDState)
+		var csBuf [9]byte
+		cs := sanitizeCallsign(csBuf[:0], parseCallsignValue(uriQuery))
+		state.RecordToggle(cs)
 	}
 
 	// Reuse header to write response.
@@ -263,26 +390,37 @@ func handleConn(conn *tcp.Conn, hdr *httpraw.Header) {
 	} else {
 		hdr.SetStatus("200", "OK")
 	}
-	var body []byte
+
 	switch requestedPage {
 	case pageLanding:
-		body = htmlTemplate
+		var dynBuf [256]byte
+		dynContent := state.AppendActionsHTML(dynBuf[:0])
 		hdr.Set("Content-Type", "text/html")
-	}
-	if len(body) > 0 {
-		hdr.Set("Content-Length", strconv.Itoa(len(body)))
-	}
-	responseHeader, err := hdr.AppendResponse(buf[:0])
-	if err != nil {
-		println("error appending:", err.Error())
-	}
-	conn.Write(responseHeader)
-	if len(body) > 0 {
-		_, err := conn.Write(body)
+		hdr.Set("Content-Length", strconv.Itoa(len(htmlTemplate)+len(dynContent)))
+		responseHeader, err := hdr.AppendResponse(buf[:0])
 		if err != nil {
-			println("writing body:", err.Error())
+			println("error appending:", err.Error())
 		}
+		conn.Write(responseHeader)
+		conn.Write(htmlTemplate[:htmlActionIdx])
+		conn.Write(dynContent)
+		conn.Write(htmlTemplate[htmlActionIdx:])
 		time.Sleep(loopSleep)
+
+	case pageToggleLED:
+		hdr.Set("Content-Length", "0")
+		responseHeader, err := hdr.AppendResponse(buf[:0])
+		if err != nil {
+			println("error appending:", err.Error())
+		}
+		conn.Write(responseHeader)
+
+	default:
+		responseHeader, err := hdr.AppendResponse(buf[:0])
+		if err != nil {
+			println("error appending:", err.Error())
+		}
+		conn.Write(responseHeader)
 	}
 }
 
