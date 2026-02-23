@@ -5,11 +5,13 @@ package main
 // WARNING: default -scheduler=cores unsupported, compile with -scheduler=tasks set!
 
 import (
+	"bytes"
 	"log/slog"
 	"machine"
 	"net"
 	"net/netip"
 	"strconv"
+	"sync"
 	"time"
 
 	_ "embed"
@@ -43,13 +45,14 @@ const (
 	pinTxBase = machine.GPIO7
 )
 
+const bodyStr = "<body>"
+
 var (
-	//go:embed index.html
-	webPage []byte
 
-	requestedIP = [4]byte{192, 168, 1, 99}
-
-	lastLedState bool
+	//go:embed template.html
+	htmlTemplate        []byte
+	htmlTemplateBodyIdx = bytes.Index(htmlTemplate, []byte(bodyStr)) + len(bodyStr)
+	requestedIP         = [4]byte{192, 168, 1, 99}
 )
 
 func main() {
@@ -137,7 +140,7 @@ func main() {
 	tcpPool, err := xnet.NewTCPPool(xnet.TCPPoolConfig{
 		PoolSize:           maxConns,
 		QueueSize:          3,
-		TxBufSize:          len(webPage) + 128,
+		TxBufSize:          len(htmlTemplate) + 128,
 		RxBufSize:          1024,
 		EstablishedTimeout: 5 * time.Second,
 		ClosingTimeout:     5 * time.Second,
@@ -191,6 +194,23 @@ const (
 	pageToggleLED
 )
 
+// ServerState stores the state of the HTTP server. It has a ring buffer with last 8 actions
+// performed. Every time a new action is performed it replaces the oldest action by advancing the ring buffer.
+type ServerState struct {
+	mu            sync.Mutex
+	ActionRingBuf [8]Action
+	LastAction    int
+	LEDState      bool
+}
+
+type Action struct {
+	Time        time.Time
+	Callsign    []byte
+	TurnedLEDOn bool
+}
+
+var state ServerState
+
 func handleConn(conn *tcp.Conn, hdr *httpraw.Header) {
 	defer conn.Close()
 	const AsRequest = false
@@ -231,10 +251,11 @@ func handleConn(conn *tcp.Conn, hdr *httpraw.Header) {
 	case "/toggle-led":
 		println("got toggle led request")
 		requestedPage = pageToggleLED
-		lastLedState = !lastLedState
-		machine.LED.Set(lastLedState)
+		state.LEDState = !state.LEDState
+		machine.LED.Set(state.LEDState)
 	}
 
+	// Reuse header to write response.
 	hdr.Reset(nil)
 	hdr.SetProtocol("HTTP/1.1")
 	if requestedPage == pageNotExists {
@@ -245,7 +266,7 @@ func handleConn(conn *tcp.Conn, hdr *httpraw.Header) {
 	var body []byte
 	switch requestedPage {
 	case pageLanding:
-		body = webPage
+		body = htmlTemplate
 		hdr.Set("Content-Type", "text/html")
 	}
 	if len(body) > 0 {
