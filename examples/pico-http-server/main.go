@@ -31,7 +31,7 @@ const (
 	linkmode   = phy.Link100FDX
 	listenPort = 80
 	loopSleep  = 5 * time.Millisecond
-	maxConns   = 3
+	maxConns   = 10
 	httpBuf    = 1024
 
 	// MDIO pins:
@@ -165,7 +165,7 @@ func main() {
 	tcpPool, err := xnet.NewTCPPool(xnet.TCPPoolConfig{
 		PoolSize:           maxConns,
 		QueueSize:          3,
-		TxBufSize:          len(htmlTemplate) + 512,
+		TxBufSize:          len(htmlTemplate) + 1024,
 		RxBufSize:          1024,
 		EstablishedTimeout: 5 * time.Second,
 		ClosingTimeout:     5 * time.Second,
@@ -336,6 +336,8 @@ func handleConn(conn *tcp.Conn, hdr *httpraw.Header) {
 	var buf [128]byte
 	hdr.Reset(nil)
 
+	conn.SetDeadline(time.Now().Add(8 * time.Second))
+
 	remoteAddr, _ := netip.AddrFromSlice(conn.RemoteAddr())
 	println("incoming connection:", remoteAddr.String(), "from port", conn.RemotePort())
 
@@ -352,7 +354,11 @@ func handleConn(conn *tcp.Conn, hdr *httpraw.Header) {
 				break
 			}
 		}
-		closed := err == net.ErrClosed || conn.State() != tcp.StateEstablished
+		if err != nil {
+			println("read error:", err.Error())
+			return
+		}
+		closed := conn.State() != tcp.StateEstablished
 		if closed {
 			break
 		} else if hdr.BufferReceived() >= httpBuf {

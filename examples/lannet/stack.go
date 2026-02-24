@@ -168,6 +168,7 @@ func (stack *Stack) logerr(msg string, attrs ...slog.Attr) {
 type serialWriter struct{}
 
 func (serialWriter) Write(b []byte) (int, error) {
+	return machine.Serial.Write(b)
 	const chunkSize = 256
 	const sleep = 30 * time.Millisecond
 	total := len(b)
