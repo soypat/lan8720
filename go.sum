@@ -1,4 +1,4 @@
-github.com/soypat/lneto v0.0.0-20260125121108-e83665f147b5 h1:seaf0gONsI2kD4D5SL7Rc96zP2accKuvw1CCF2/A+xg=
-github.com/soypat/lneto v0.0.0-20260125121108-e83665f147b5/go.mod h1:g/8Lk+hIsMZydyWDJjK2YfsCuG6jA5mWCO6U+4S7w1U=
-github.com/tinygo-org/pio v0.2.0 h1:vo3xa6xDZ2rVtxrks/KcTZHF3qq4lyWOntvEvl2pOhU=
-github.com/tinygo-org/pio v0.2.0/go.mod h1:LU7Dw00NJ+N86QkeTGjMLNkYcEYMor6wTDpTCu0EaH8=
+github.com/soypat/lneto v0.0.0-20260225155855-be949d960c6b h1:A9B9nPt4YrkgFEabevNKBO1Y0sXndbhrTyQcEmudqj8=
+github.com/soypat/lneto v0.0.0-20260225155855-be949d960c6b/go.mod h1:g/8Lk+hIsMZydyWDJjK2YfsCuG6jA5mWCO6U+4S7w1U=
+github.com/tinygo-org/pio v0.3.0 h1:opEnOtw58KGB4RJD3/n/Rd0/djYGX3DeJiXLI6y/yDI=
+github.com/tinygo-org/pio v0.3.0/go.mod h1:wf6c6lKZp+pQOzKKcpzchmRuhiMc27ABRuo7KVnaMFU=
