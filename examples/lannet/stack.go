@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/soypat/lan8720"
+	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/x/xnet"
 )
@@ -124,7 +125,11 @@ func (stack *Stack) RecvAndSend() (send, recv int, err error) {
 		}
 		err = stack.s.Demux(stack.rxbuf[:n], 0)
 		if err != nil {
-			stack.logerr("RecvAndSend:Demux", slog.Int("plen", n), slog.String("err", err.Error()))
+			if err != lneto.ErrPacketDrop {
+				stack.logerr("RecvAndSend:Demux", slog.Int("plen", n), slog.String("err", err.Error()))
+			} else {
+				println("packet drop")
+			}
 		}
 		// Immediately start another receive.
 		rxerr := dev.StartRxSingle()
