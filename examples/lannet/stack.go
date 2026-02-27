@@ -174,16 +174,4 @@ type serialWriter struct{}
 
 func (serialWriter) Write(b []byte) (int, error) {
 	return machine.Serial.Write(b)
-	const chunkSize = 256
-	const sleep = 30 * time.Millisecond
-	total := len(b)
-	for len(b) > 0 {
-		n := min(len(b), chunkSize)
-		machine.Serial.Write(b[:n])
-		b = b[n:]
-		if len(b) > 0 {
-			time.Sleep(sleep)
-		}
-	}
-	return total, nil
 }
