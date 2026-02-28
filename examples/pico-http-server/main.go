@@ -170,10 +170,9 @@ func main() {
 		EstablishedTimeout: 5 * time.Second,
 		ClosingTimeout:     5 * time.Second,
 		NewUserData: func() any {
-			var hdr httpraw.Header
-			buf := make([]byte, httpBuf)
-			hdr.Reset(buf)
-			return &hdr
+			cs := new(connState)
+			cs.hdr.Reset(cs.httpBuf[:])
+			return cs
 		},
 	})
 	if err != nil {
@@ -194,6 +193,13 @@ func main() {
 
 	logger.Info("listening", slog.String("addr", "http://"+listenAddr.String()))
 
+	// Pre-allocate worker goroutines so stacks are allocated once at startup
+	// instead of per-connection. Maintains full concurrency up to maxConns.
+	jobCh := make(chan connJob, maxConns)
+	for range maxConns {
+		go connWorker(jobCh)
+	}
+
 	for {
 		if listener.NumberOfReadyToAccept() == 0 {
 			time.Sleep(loopSleep)
@@ -201,14 +207,30 @@ func main() {
 			continue
 		}
 
-		conn, httpBuf, err := listener.TryAccept()
+		conn, userData, err := listener.TryAccept()
 		if err != nil {
 			logger.Error("listener accept:", slog.String("err", err.Error()))
 			time.Sleep(time.Second)
 			continue
 		}
-		go handleConn(conn, httpBuf.(*httpraw.Header))
+		jobCh <- connJob{conn: conn, cs: userData.(*connState)}
 	}
+}
+
+// connState holds all per-connection buffers, pre-allocated during pool init.
+// Eliminates per-connection heap escapes of local arrays (buf, dynBuf, csBuf)
+// and the make([]byte, httpBuf) that exceeds TinyGo's 256-byte stack limit.
+type connState struct {
+	hdr     httpraw.Header
+	httpBuf [httpBuf]byte
+	buf     [128]byte
+	dynBuf  [256]byte
+	csBuf   [9]byte
+}
+
+type connJob struct {
+	conn *tcp.Conn
+	cs   *connState
 }
 
 type page uint8
@@ -330,11 +352,18 @@ func sanitizeCallsign(dst, raw []byte) []byte {
 	return dst
 }
 
-func handleConn(conn *tcp.Conn, hdr *httpraw.Header) {
+func connWorker(ch <-chan connJob) {
+	for job := range ch {
+		handleConn(job.conn, job.cs)
+	}
+}
+
+func handleConn(conn *tcp.Conn, cs *connState) {
 	defer conn.Close()
 	const AsRequest = false
-	var buf [128]byte
+	hdr := &cs.hdr
 	hdr.Reset(nil)
+	buf := cs.buf[:]
 
 	conn.SetDeadline(time.Now().Add(8 * time.Second))
 
@@ -342,7 +371,7 @@ func handleConn(conn *tcp.Conn, hdr *httpraw.Header) {
 	println("incoming connection:", remoteAddr.String(), "from port", conn.RemotePort())
 
 	for {
-		n, err := conn.Read(buf[:])
+		n, err := conn.Read(buf)
 		if n > 0 {
 			hdr.ReadFromBytes(buf[:n])
 			needMoreData, err := hdr.TryParse(AsRequest)
@@ -383,9 +412,8 @@ func handleConn(conn *tcp.Conn, hdr *httpraw.Header) {
 	case "/toggle-led":
 		println("got toggle led request")
 		requestedPage = pageToggleLED
-		var csBuf [9]byte
-		cs := sanitizeCallsign(csBuf[:0], parseCallsignValue(uriQuery))
-		state.RecordToggle(cs)
+		callsign := sanitizeCallsign(cs.csBuf[:0], parseCallsignValue(uriQuery))
+		state.RecordToggle(callsign)
 	}
 
 	// Reuse header to write response.
@@ -399,8 +427,7 @@ func handleConn(conn *tcp.Conn, hdr *httpraw.Header) {
 
 	switch requestedPage {
 	case pageLanding:
-		var dynBuf [256]byte
-		dynContent := state.AppendActionsHTML(dynBuf[:0])
+		dynContent := state.AppendActionsHTML(cs.dynBuf[:0])
 		hdr.Set("Content-Type", "text/html")
 		hdr.Set("Content-Length", strconv.Itoa(len(htmlTemplate)+len(dynContent)))
 		responseHeader, err := hdr.AppendResponse(buf[:0])
