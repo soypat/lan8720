@@ -42,10 +42,11 @@ type Entry struct {
 	Raw  string    // original line text
 
 	// KindAlloc fields:
-	AllocInc     int64 // bytes allocated since last [ALLOC]
-	AllocN       int64 // number of allocations since last [ALLOC] (-1 if not available)
-	AllocHeap    int64 // current HeapAlloc at this point (-1 if not available)
-	AllocTot     int64 // cumulative total bytes allocated
+	AllocLabel   string // label after [ALLOC] (e.g. "StackIP.Demux:start", "seqs")
+	AllocInc     int64  // bytes allocated since last [ALLOC]
+	AllocN       int64  // number of allocations since last [ALLOC] (-1 if not available)
+	AllocHeap    int64  // current HeapAlloc at this point (-1 if not available)
+	AllocTot     int64  // cumulative total bytes allocated
 
 	// KindPcap fields:
 	BootTime  float64 // seconds since boot (e.g. 7.188)
@@ -77,8 +78,9 @@ type ParseResult struct {
 	Allocs  []AllocEvent // allocation events in order
 }
 
+const allocMarker = "[ALLOC]"
+
 var (
-	reAlloc = regexp.MustCompile(`\[ALLOC\](?:\s+seqs)? inc=(-?\d+)(?:\s+n=(\d+))?(?:\s+heap=(\d+))?\s+tot=(\d+)`)
 	reHeapLog   = regexp.MustCompile(`^time=\[([^\]]+)\]\s+(\S+)\s+(\S+)(.*)`)
 	reSlogLog   = regexp.MustCompile(`^time=\S+\s+level=(\S+)\s+msg=("?)(.+)`)
 	rePcap      = regexp.MustCompile(`^(\d+\.\d+)\s+(RX|TX)(\d+)\s+`)
@@ -87,6 +89,46 @@ var (
 	reSrcPort   = regexp.MustCompile(`\(Source port\)=(\d+)`)
 	reProtoHigh = regexp.MustCompile(`\|\s+(HTTP|DNS|NTP|DHCPv4|TCP|UDP|ARP|ICMP)\b`)
 )
+
+// parseAllocFields parses "[ALLOC] label key=val key=val ..." into an Entry.
+// Returns the entry and true if successful.
+func parseAllocFields(raw string) (Entry, bool) {
+	e := Entry{Kind: KindAlloc, Raw: raw, AllocN: -1, AllocHeap: -1}
+	// Skip past "[ALLOC] ".
+	rest := raw[len(allocMarker):]
+	if len(rest) > 0 && rest[0] == ' ' {
+		rest = rest[1:]
+	}
+	// First word without '=' is the label.
+	if word, after, ok := strings.Cut(rest, " "); ok && !strings.Contains(word, "=") {
+		e.AllocLabel = word
+		rest = after
+	}
+	// Parse key=value pairs.
+	for rest != "" {
+		var token string
+		token, rest, _ = strings.Cut(rest, " ")
+		key, val, ok := strings.Cut(token, "=")
+		if !ok || key == "" {
+			continue
+		}
+		v, err := strconv.ParseInt(val, 10, 64)
+		if err != nil {
+			continue
+		}
+		switch key {
+		case "inc":
+			e.AllocInc = v
+		case "n":
+			e.AllocN = v
+		case "heap":
+			e.AllocHeap = v
+		case "tot":
+			e.AllocTot = v
+		}
+	}
+	return e, true
+}
 
 // Parse processes raw log lines into a ParseResult.
 func Parse(lines []string) ParseResult {
@@ -100,11 +142,8 @@ func Parse(lines []string) ParseResult {
 		lineNum := i + 1
 
 		// Check for embedded [ALLOC] anywhere in the line.
-		if loc := reAlloc.FindStringSubmatchIndex(line); loc != nil {
-			allocStr := line[loc[0]:loc[1]]
-			before := strings.TrimSpace(line[:loc[0]])
-			// The rest after the alloc match is not useful (just "seqs" or empty).
-
+		if idx := strings.Index(line, allocMarker); idx >= 0 {
+			before := strings.TrimSpace(line[:idx])
 			// If there's content before the [ALLOC], emit it as its own entry first.
 			if before != "" {
 				e := parseSingleLine(before, lineNum)
@@ -114,30 +153,11 @@ func Parse(lines []string) ParseResult {
 				updatePhase(e, &phase)
 				pr.Entries = append(pr.Entries, e)
 			}
-
 			// Emit the alloc entry.
-			inc, _ := strconv.ParseInt(line[loc[2]:loc[3]], 10, 64)
-			var allocN int64 = -1
-			var allocHeap int64 = -1
-			// n= field (submatch 2, indices loc[4]:loc[5])
-			if loc[4] >= 0 {
-				allocN, _ = strconv.ParseInt(line[loc[4]:loc[5]], 10, 64)
+			if ae, ok := parseAllocFields(line[idx:]); ok {
+				ae.Line = lineNum
+				pr.Entries = append(pr.Entries, ae)
 			}
-			// heap= field (submatch 3, indices loc[6]:loc[7])
-			if loc[6] >= 0 {
-				allocHeap, _ = strconv.ParseInt(line[loc[6]:loc[7]], 10, 64)
-			}
-			// tot= field (submatch 4, indices loc[8]:loc[9])
-			tot, _ := strconv.ParseInt(line[loc[8]:loc[9]], 10, 64)
-			pr.Entries = append(pr.Entries, Entry{
-				Line:      lineNum,
-				Kind:      KindAlloc,
-				Raw:       allocStr,
-				AllocInc:  inc,
-				AllocN:    allocN,
-				AllocHeap: allocHeap,
-				AllocTot:  tot,
-			})
 			continue
 		}
 

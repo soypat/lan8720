@@ -434,8 +434,10 @@ func handleConn(conn *tcp.Conn, cs *connState, stack *xnet.StackAsync) {
 	switch requestedPage {
 	case pageLanding:
 		dynContent := state.AppendActionsHTML(cs.dynBuf[:0])
+		contentLength := len(htmlTemplate) + len(dynContent)
+		buf = strconv.AppendUint(buf[:0], uint64(contentLength), 10)
 		hdr.Set("Content-Type", "text/html")
-		hdr.Set("Content-Length", strconv.Itoa(len(htmlTemplate)+len(dynContent)))
+		hdr.SetBytes("Content-Length", buf)
 		responseHeader, err := hdr.AppendResponse(buf[:0])
 		if err != nil {
 			println("error appending:", err.Error())
