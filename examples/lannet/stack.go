@@ -3,7 +3,6 @@
 package lannet
 
 import (
-	"context"
 	"hash/crc32"
 	"log/slog"
 	"machine"
@@ -126,7 +125,7 @@ func (stack *Stack) RecvAndSend() (send, recv int, err error) {
 		err = stack.s.Demux(stack.rxbuf[:n], 0)
 		if err != nil {
 			if err != lneto.ErrPacketDrop {
-				stack.logerr("RecvAndSend:Demux", slog.Int("plen", n), slog.String("err", err.Error()))
+				stack.logerr("demux", err.Error()) // TODO(HEAP): real slog, 121B/11 mallocs per call
 			} else {
 				println("packet drop")
 			}
@@ -134,14 +133,14 @@ func (stack *Stack) RecvAndSend() (send, recv int, err error) {
 		// Immediately start another receive.
 		rxerr := dev.StartRxSingle()
 		if rxerr != nil {
-			stack.logerr("RecvAndSend:StartRxSingle", slog.String("err", rxerr.Error()))
+			stack.logerr("RecvAndSend:StartRxSingle", rxerr.Error())
 		}
 	}
 
 	// Check if there's data to send.
 	send, err = stack.s.Encapsulate(stack.sendbuf, -1, 0)
 	if err != nil {
-		stack.logerr("RecvAndSend:Encapsulate", slog.Int("plen", send), slog.String("err", err.Error()))
+		stack.logerr("encaps", err.Error())
 		return send, recv, err
 	}
 	if send == 0 {
@@ -155,7 +154,7 @@ func (stack *Stack) RecvAndSend() (send, recv int, err error) {
 	// Send the packet.
 	err = dev.SendFrame(stack.sendbuf[:send])
 	if err != nil {
-		stack.logerr("RecvAndSend:SendFrame", slog.Int("plen", send), slog.String("err", err.Error()))
+		stack.logerr("sendframe", err.Error())
 	}
 	return send, recv, err
 }
@@ -164,9 +163,10 @@ func (stack *Stack) printPcap(direction string, data []byte) {
 	stack.pcap.PrintPacket(direction, data)
 }
 
-func (stack *Stack) logerr(msg string, attrs ...slog.Attr) {
+// TODO(HEAP): real slog.Logger allocates 121B/11 mallocs per call (1024-byte buffer, handler state, value boxing).
+func (stack *Stack) logerr(msg string, err string, attrs ...slog.Attr) {
 	if stack.log != nil {
-		stack.log.LogAttrs(context.Background(), slog.LevelError, msg, attrs...)
+		stack.s.DebugErr(msg, err)
 	}
 }
 

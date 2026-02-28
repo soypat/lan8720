@@ -42,8 +42,10 @@ type Entry struct {
 	Raw  string    // original line text
 
 	// KindAlloc fields:
-	AllocInc int64 // bytes allocated since last [ALLOC]
-	AllocTot int64 // cumulative total bytes allocated
+	AllocInc     int64 // bytes allocated since last [ALLOC]
+	AllocN       int64 // number of allocations since last [ALLOC] (-1 if not available)
+	AllocHeap    int64 // current HeapAlloc at this point (-1 if not available)
+	AllocTot     int64 // cumulative total bytes allocated
 
 	// KindPcap fields:
 	BootTime  float64 // seconds since boot (e.g. 7.188)
@@ -76,7 +78,7 @@ type ParseResult struct {
 }
 
 var (
-	reAlloc     = regexp.MustCompile(`\[ALLOC\] inc=(-?\d+) tot=(\d+) seqs`)
+	reAlloc = regexp.MustCompile(`\[ALLOC\](?:\s+seqs)? inc=(-?\d+)(?:\s+n=(\d+))?(?:\s+heap=(\d+))?\s+tot=(\d+)`)
 	reHeapLog   = regexp.MustCompile(`^time=\[([^\]]+)\]\s+(\S+)\s+(\S+)(.*)`)
 	reSlogLog   = regexp.MustCompile(`^time=\S+\s+level=(\S+)\s+msg=("?)(.+)`)
 	rePcap      = regexp.MustCompile(`^(\d+\.\d+)\s+(RX|TX)(\d+)\s+`)
@@ -115,13 +117,26 @@ func Parse(lines []string) ParseResult {
 
 			// Emit the alloc entry.
 			inc, _ := strconv.ParseInt(line[loc[2]:loc[3]], 10, 64)
-			tot, _ := strconv.ParseInt(line[loc[4]:loc[5]], 10, 64)
+			var allocN int64 = -1
+			var allocHeap int64 = -1
+			// n= field (submatch 2, indices loc[4]:loc[5])
+			if loc[4] >= 0 {
+				allocN, _ = strconv.ParseInt(line[loc[4]:loc[5]], 10, 64)
+			}
+			// heap= field (submatch 3, indices loc[6]:loc[7])
+			if loc[6] >= 0 {
+				allocHeap, _ = strconv.ParseInt(line[loc[6]:loc[7]], 10, 64)
+			}
+			// tot= field (submatch 4, indices loc[8]:loc[9])
+			tot, _ := strconv.ParseInt(line[loc[8]:loc[9]], 10, 64)
 			pr.Entries = append(pr.Entries, Entry{
-				Line:     lineNum,
-				Kind:     KindAlloc,
-				Raw:      allocStr,
-				AllocInc: inc,
-				AllocTot: tot,
+				Line:      lineNum,
+				Kind:      KindAlloc,
+				Raw:       allocStr,
+				AllocInc:  inc,
+				AllocN:    allocN,
+				AllocHeap: allocHeap,
+				AllocTot:  tot,
 			})
 			continue
 		}

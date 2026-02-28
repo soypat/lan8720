@@ -135,6 +135,7 @@ func main() {
 		panic("ARP resolve failed: " + err.Error())
 	}
 	llstack.SetGateway6(gatewayHW)
+	llstack.Debug("post-dhcp")
 	logger.Info("DHCP complete",
 		slog.String("ourIP", results.AssignedAddr.String()),
 		slog.String("router", results.Router.String()),
@@ -192,6 +193,7 @@ func main() {
 	}
 
 	logger.Info("listening", slog.String("addr", "http://"+listenAddr.String()))
+	llstack.Debug("init-complete")
 
 	// Pre-allocate worker goroutines so stacks are allocated once at startup
 	// instead of per-connection. Maintains full concurrency up to maxConns.
@@ -209,11 +211,11 @@ func main() {
 
 		conn, userData, err := listener.TryAccept()
 		if err != nil {
-			logger.Error("listener accept:", slog.String("err", err.Error()))
+			logger.Error("listener accept:", slog.String("err", err.Error())) // TODO(HEAP): real slog allocates 121B/11 mallocs
 			time.Sleep(time.Second)
 			continue
 		}
-		jobCh <- connJob{conn: conn, cs: userData.(*connState)}
+		jobCh <- connJob{conn: conn, cs: userData.(*connState), stack: llstack}
 	}
 }
 
@@ -229,8 +231,9 @@ type connState struct {
 }
 
 type connJob struct {
-	conn *tcp.Conn
-	cs   *connState
+	conn  *tcp.Conn
+	cs    *connState
+	stack *xnet.StackAsync
 }
 
 type page uint8
@@ -354,21 +357,22 @@ func sanitizeCallsign(dst, raw []byte) []byte {
 
 func connWorker(ch <-chan connJob) {
 	for job := range ch {
-		handleConn(job.conn, job.cs)
+		handleConn(job.conn, job.cs, job.stack)
 	}
 }
 
-func handleConn(conn *tcp.Conn, cs *connState) {
+func handleConn(conn *tcp.Conn, cs *connState, stack *xnet.StackAsync) {
 	defer conn.Close()
 	const AsRequest = false
 	hdr := &cs.hdr
 	hdr.Reset(nil)
 	buf := cs.buf[:]
 
+	stack.Debug("conn-start")
 	conn.SetDeadline(time.Now().Add(8 * time.Second))
-
 	remoteAddr, _ := netip.AddrFromSlice(conn.RemoteAddr())
 	println("incoming connection:", remoteAddr.String(), "from port", conn.RemotePort())
+	stack.Debug("post-deadline+println")
 
 	for {
 		n, err := conn.Read(buf)
@@ -416,6 +420,7 @@ func handleConn(conn *tcp.Conn, cs *connState) {
 		state.RecordToggle(callsign)
 	}
 
+	stack.Debug("post-read-loop")
 	// Reuse header to write response.
 	hdr.Reset(nil)
 	hdr.SetProtocol("HTTP/1.1")
@@ -425,6 +430,7 @@ func handleConn(conn *tcp.Conn, cs *connState) {
 		hdr.SetStatus("200", "OK")
 	}
 
+	stack.Debug("pre-response")
 	switch requestedPage {
 	case pageLanding:
 		dynContent := state.AppendActionsHTML(cs.dynBuf[:0])
@@ -455,6 +461,7 @@ func handleConn(conn *tcp.Conn, cs *connState) {
 		}
 		conn.Write(responseHeader)
 	}
+	stack.Debug("pre-close")
 }
 
 func loopForeverStack(stack *lannet.Stack) {

@@ -19,6 +19,8 @@ type IncBucket struct {
 	Inc        int64
 	Count      int
 	TotalBytes int64
+	TotalN     int64 // sum of AllocN across events (0 if unavailable)
+	HasN       bool  // whether any event had AllocN data
 }
 
 // PhaseStat aggregates allocations by phase.
@@ -132,7 +134,8 @@ func IncHistogram(pr ParseResult) []IncBucket {
 	}
 
 	for _, ae := range pr.Allocs {
-		inc := pr.Entries[ae.Idx].AllocInc
+		e := pr.Entries[ae.Idx]
+		inc := e.AllocInc
 		bi := findBucket(inc)
 		if bi < 0 {
 			bi = len(buckets)
@@ -140,6 +143,10 @@ func IncHistogram(pr ParseResult) []IncBucket {
 		}
 		buckets[bi].Count++
 		buckets[bi].TotalBytes += inc
+		if e.AllocN >= 0 {
+			buckets[bi].TotalN += e.AllocN
+			buckets[bi].HasN = true
+		}
 	}
 
 	sort.Slice(buckets, func(i, j int) bool {

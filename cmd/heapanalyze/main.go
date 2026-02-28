@@ -97,9 +97,22 @@ func printContextGroups(groups []AllocGroup, totalBytes int64) {
 }
 
 func printHistogram(hist []IncBucket, totalBytes int64) {
+	// Check if any bucket has allocation count data.
+	hasN := false
+	for _, b := range hist {
+		if b.HasN {
+			hasN = true
+			break
+		}
+	}
+
 	fmt.Println("=== Inc Value Histogram ===")
-	fmt.Printf("  %12s  %8s  %12s  %6s\n", "inc", "Count", "Total", "%")
-	fmt.Println(strings.Repeat("-", 50))
+	if hasN {
+		fmt.Printf("  %12s  %8s  %8s  %12s  %6s\n", "inc", "Count", "Mallocs", "Total", "%")
+	} else {
+		fmt.Printf("  %12s  %8s  %12s  %6s\n", "inc", "Count", "Total", "%")
+	}
+	fmt.Println(strings.Repeat("-", 60))
 
 	limit := len(hist)
 	if limit > 25 {
@@ -111,7 +124,15 @@ func printHistogram(hist []IncBucket, totalBytes int64) {
 		if totalBytes > 0 {
 			pct = float64(b.TotalBytes) / float64(totalBytes) * 100
 		}
-		fmt.Printf("  %12d  %8d  %12s  %5.1f%%\n", b.Inc, b.Count, fmtBytes(b.TotalBytes), pct)
+		if hasN {
+			avgN := ""
+			if b.HasN && b.Count > 0 {
+				avgN = fmt.Sprintf("%.1f", float64(b.TotalN)/float64(b.Count))
+			}
+			fmt.Printf("  %12d  %8d  %8s  %12s  %5.1f%%\n", b.Inc, b.Count, avgN, fmtBytes(b.TotalBytes), pct)
+		} else {
+			fmt.Printf("  %12d  %8d  %12s  %5.1f%%\n", b.Inc, b.Count, fmtBytes(b.TotalBytes), pct)
+		}
 	}
 	if len(hist) > limit {
 		fmt.Printf("  ... and %d more distinct values\n", len(hist)-limit)
