@@ -46,6 +46,7 @@ type Entry struct {
 	AllocInc     int64  // bytes allocated since last [ALLOC]
 	AllocN       int64  // number of allocations since last [ALLOC] (-1 if not available)
 	AllocHeap    int64  // current HeapAlloc at this point (-1 if not available)
+	AllocFree    int64  // free heap bytes (HeapSys-HeapInuse) at this point (-1 if not available)
 	AllocTot     int64  // cumulative total bytes allocated
 
 	// KindPcap fields:
@@ -93,7 +94,7 @@ var (
 // parseAllocFields parses "[ALLOC] label key=val key=val ..." into an Entry.
 // Returns the entry and true if successful.
 func parseAllocFields(raw string) (Entry, bool) {
-	e := Entry{Kind: KindAlloc, Raw: raw, AllocN: -1, AllocHeap: -1}
+	e := Entry{Kind: KindAlloc, Raw: raw, AllocN: -1, AllocHeap: -1, AllocFree: -1}
 	// Skip past "[ALLOC] ".
 	rest := raw[len(allocMarker):]
 	if len(rest) > 0 && rest[0] == ' ' {
@@ -123,6 +124,8 @@ func parseAllocFields(raw string) (Entry, bool) {
 			e.AllocN = v
 		case "heap":
 			e.AllocHeap = v
+		case "free":
+			e.AllocFree = v
 		case "tot":
 			e.AllocTot = v
 		}

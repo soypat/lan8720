@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"sync"
 	"time"
+	"unsafe"
 
 	_ "embed"
 
@@ -371,7 +372,9 @@ func handleConn(conn *tcp.Conn, cs *connState, stack *xnet.StackAsync) {
 	stack.Debug("conn-start")
 	conn.SetDeadline(time.Now().Add(8 * time.Second))
 	remoteAddr, _ := netip.AddrFromSlice(conn.RemoteAddr())
-	println("incoming connection:", remoteAddr.String(), "from port", conn.RemotePort())
+	print("incoming connection: ")
+	printAddr(remoteAddr, buf[:0])
+	println(" from port", conn.RemotePort())
 	stack.Debug("post-deadline+println")
 
 	for {
@@ -399,7 +402,7 @@ func handleConn(conn *tcp.Conn, cs *connState, stack *xnet.StackAsync) {
 			return
 		}
 	}
-
+	// BEGIN PARSING REQUEST.
 	uri := hdr.RequestURI()
 	uriPath := uri
 	var uriQuery []byte
@@ -409,11 +412,11 @@ func handleConn(conn *tcp.Conn, cs *connState, stack *xnet.StackAsync) {
 	}
 
 	var requestedPage page
-	switch string(uriPath) {
-	case "/":
+	switch {
+	case bytesEqual(uriPath, "/"):
 		println("Got webpage request!")
 		requestedPage = pageLanding
-	case "/toggle-led":
+	case bytesEqual(uriPath, "/toggle-led"):
 		println("got toggle led request")
 		requestedPage = pageToggleLED
 		callsign := sanitizeCallsign(cs.csBuf[:0], parseCallsignValue(uriQuery))
@@ -421,6 +424,7 @@ func handleConn(conn *tcp.Conn, cs *connState, stack *xnet.StackAsync) {
 	}
 
 	stack.Debug("post-read-loop")
+	// BEGIN RESPONSE.
 	// Reuse header to write response.
 	hdr.Reset(nil)
 	hdr.SetProtocol("HTTP/1.1")
@@ -429,7 +433,10 @@ func handleConn(conn *tcp.Conn, cs *connState, stack *xnet.StackAsync) {
 	} else {
 		hdr.SetStatus("200", "OK")
 	}
-
+	// We call Close() on exiting this function.
+	// If we omit Connection:close in header we'll have notably slower paint times in browser.
+	// One thing to keep in mind when using Connection:close is using Content-Length to prevent early browser close.
+	hdr.Set("Connection", "close")
 	stack.Debug("pre-response")
 	switch requestedPage {
 	case pageLanding:
@@ -464,6 +471,23 @@ func handleConn(conn *tcp.Conn, cs *connState, stack *xnet.StackAsync) {
 		conn.Write(responseHeader)
 	}
 	stack.Debug("pre-close")
+}
+
+// printAddr prints a netip.Addr without heap allocation by formatting into buf.
+func printAddr(addr netip.Addr, buf []byte) {
+	buf = addr.AppendTo(buf[:0])
+	print(unsafe.String(&buf[0], len(buf)))
+}
+
+// bytesEqual compares a byte slice to a string without heap allocation.
+func bytesEqual(b []byte, s string) bool {
+	if len(b) != len(s) {
+		return false
+	}
+	if len(b) == 0 {
+		return true
+	}
+	return unsafe.String(&b[0], len(b)) == s
 }
 
 func loopForeverStack(stack *lannet.Stack) {

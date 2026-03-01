@@ -38,8 +38,16 @@ type TimeBucket struct {
 	Count      int
 }
 
+// HeapStats holds heap metrics extracted from [ALLOC] entries.
+type HeapStats struct {
+	FinalHeap int64 // last seen HeapAlloc (-1 if unavailable)
+	FinalFree int64 // last seen free heap (-1 if unavailable)
+	MinFree   int64 // minimum free heap observed (-1 if unavailable)
+}
+
 // Summary returns overall statistics from the parse result.
-func Summary(pr ParseResult) (totalBytes int64, count int, durationSec float64) {
+func Summary(pr ParseResult) (totalBytes int64, count int, durationSec float64, heap HeapStats) {
+	heap = HeapStats{FinalHeap: -1, FinalFree: -1, MinFree: -1}
 	count = len(pr.Allocs)
 	if count == 0 {
 		return
@@ -51,6 +59,19 @@ func Summary(pr ParseResult) (totalBytes int64, count int, durationSec float64) 
 	durationSec = last.BootTime - first.BootTime
 	if durationSec < 0 {
 		durationSec = 0
+	}
+	// Scan for heap stats.
+	for _, ae := range pr.Allocs {
+		e := pr.Entries[ae.Idx]
+		if e.AllocHeap >= 0 {
+			heap.FinalHeap = e.AllocHeap
+		}
+		if e.AllocFree >= 0 {
+			heap.FinalFree = e.AllocFree
+			if heap.MinFree < 0 || e.AllocFree < heap.MinFree {
+				heap.MinFree = e.AllocFree
+			}
+		}
 	}
 	return
 }

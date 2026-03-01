@@ -24,8 +24,8 @@ func main() {
 	lines := readLines(input)
 	pr := Parse(lines)
 
-	totalBytes, count, dur := Summary(pr)
-	printSummary(totalBytes, count, dur)
+	totalBytes, count, dur, heap := Summary(pr)
+	printSummary(totalBytes, count, dur, heap)
 
 	groups := GroupByContext(pr)
 	printContextGroups(groups, totalBytes)
@@ -53,11 +53,21 @@ func readLines(f *os.File) []string {
 	return lines
 }
 
-func printSummary(totalBytes int64, count int, dur float64) {
+func printSummary(totalBytes int64, count int, dur float64, heap HeapStats) {
 	fmt.Println("=== Heap Allocation Analysis ===")
 	fmt.Printf("Total: %s across %d allocation events\n", fmtBytes(totalBytes), count)
 	if dur > 0 {
 		fmt.Printf("Duration: %.1fs   Rate: %s/sec\n", dur, fmtBytes(int64(float64(totalBytes)/dur)))
+	}
+	if heap.FinalHeap >= 0 {
+		fmt.Printf("Final heap: %s", fmtBytes(heap.FinalHeap))
+		if heap.FinalFree >= 0 {
+			fmt.Printf("   Free: %s", fmtBytes(heap.FinalFree))
+		}
+		fmt.Println()
+	}
+	if heap.MinFree >= 0 {
+		fmt.Printf("Min free:   %s\n", fmtBytes(heap.MinFree))
 	}
 	fmt.Println()
 }
