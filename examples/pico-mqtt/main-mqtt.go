@@ -157,7 +157,7 @@ func main() {
 		if !conn.State().IsClosed() {
 			conn.Abort()
 		}
-		err = rstack.DoDialTCP(&conn, mqttPort, netip.AddrPortFrom(netip.AddrFrom4(mqttAddr), mqttPort), connectTimeout, 6)
+		err = rstack.DoDialTCP(&conn, uint16(llstack.Prand32()), netip.AddrPortFrom(netip.AddrFrom4(mqttAddr), mqttPort), connectTimeout, 6)
 		if err != nil {
 			llstack.DebugErr("failed dial TCP", err.Error())
 			println("\n\n\n TCP FAILED\n\n\n")
@@ -173,7 +173,6 @@ func main() {
 		conn.Close()
 		time.Sleep(time.Second)
 	}
-
 }
 
 func handleConn(conn *tcp.Conn, client *mqtt.Client) {
