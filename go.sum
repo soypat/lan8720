@@ -1,4 +1,4 @@
-github.com/soypat/lneto v0.0.0-20260225155855-be949d960c6b h1:A9B9nPt4YrkgFEabevNKBO1Y0sXndbhrTyQcEmudqj8=
-github.com/soypat/lneto v0.0.0-20260225155855-be949d960c6b/go.mod h1:g/8Lk+hIsMZydyWDJjK2YfsCuG6jA5mWCO6U+4S7w1U=
+github.com/soypat/natiu-mqtt v0.6.0 h1:ddrem9iAqFYtQOx2C7AhCizhPXXmGZs1T5fkvLroPO4=
+github.com/soypat/natiu-mqtt v0.6.0/go.mod h1:xEta+cwop9izVCW7xOx2W+ct9PRMqr0gNVkvBPnQTc4=
 github.com/tinygo-org/pio v0.3.0 h1:opEnOtw58KGB4RJD3/n/Rd0/djYGX3DeJiXLI6y/yDI=
 github.com/tinygo-org/pio v0.3.0/go.mod h1:wf6c6lKZp+pQOzKKcpzchmRuhiMc27ABRuo7KVnaMFU=
