@@ -202,7 +202,7 @@ func main() {
 	for range maxConns {
 		go connWorker(jobCh)
 	}
-
+	llstack.Debug("goroutines allocated")
 	for {
 		if listener.NumberOfReadyToAccept() == 0 {
 			time.Sleep(loopSleep)
@@ -427,22 +427,26 @@ func handleConn(conn *tcp.Conn, cs *connState, stack *xnet.StackAsync) {
 	// BEGIN RESPONSE.
 	// Reuse header to write response.
 	hdr.Reset(nil)
+	stack.Debug("post-reset")
 	hdr.SetProtocol("HTTP/1.1")
+	stack.Debug("post-setproto")
 	if requestedPage == pageNotExists {
 		hdr.SetStatus("404", "Not Found")
 	} else {
 		hdr.SetStatus("200", "OK")
 	}
+	stack.Debug("post-setstatus")
 	// We call Close() on exiting this function.
 	// If we omit Connection:close in header we'll have notably slower paint times in browser.
 	// One thing to keep in mind when using Connection:close is using Content-Length to prevent early browser close.
 	hdr.Set("Connection", "close")
-	stack.Debug("pre-response")
+	stack.Debug("post-set-conn-close")
 	switch requestedPage {
 	case pageLanding:
 		dynContent := state.AppendActionsHTML(cs.dynBuf[:0])
 		contentLength := len(htmlTemplate) + len(dynContent)
 		buf = strconv.AppendUint(buf[:0], uint64(contentLength), 10)
+		stack.Debug("post-appendhtml")
 		hdr.Set("Content-Type", "text/html")
 		hdr.SetBytes("Content-Length", buf)
 		responseHeader, err := hdr.AppendResponse(buf[:0])

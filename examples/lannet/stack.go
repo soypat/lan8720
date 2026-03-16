@@ -38,6 +38,8 @@ type StackConfig struct {
 	StaticAddress     netip.Addr
 	Hostname          string
 	MaxTCPPorts       int
+	MaxUDPPorts       int
+	AcceptMulticast   bool
 	RandSeed          int64
 	Logger            *slog.Logger
 	EnableRxPcapPrint bool
@@ -71,6 +73,8 @@ func NewStack(dev *lan8720.DeviceSingle, mac [6]byte, cfg StackConfig) (*Stack, 
 		StaticAddress:   cfg.StaticAddress,
 		Hostname:        cfg.Hostname,
 		MaxTCPConns:     cfg.MaxTCPPorts,
+		MaxUDPConns:     cfg.MaxUDPPorts,
+		AcceptMulticast: cfg.AcceptMulticast,
 		RandSeed:        time.Now().UnixNano() ^ int64(cfg.RandSeed),
 		HardwareAddress: mac,
 		MTU:             MTU,
