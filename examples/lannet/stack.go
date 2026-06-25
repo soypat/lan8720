@@ -6,7 +6,6 @@ import (
 	"hash/crc32"
 	"log/slog"
 	"machine"
-	"net/netip"
 	"time"
 
 	"github.com/soypat/lan8720"
@@ -35,10 +34,11 @@ type Stack struct {
 }
 
 type StackConfig struct {
-	StaticAddress     netip.Addr
+	StaticAddress4    [4]byte
 	Hostname          string
-	MaxTCPPorts       int
-	MaxUDPPorts       int
+	MaxActiveTCPPorts uint16
+	MaxActiveUDPPorts uint16
+	ICMPQueueLimit    int
 	AcceptMulticast   bool
 	RandSeed          int64
 	Logger            *slog.Logger
@@ -70,17 +70,18 @@ func NewStack(dev *lan8720.DeviceSingle, mac [6]byte, cfg StackConfig) (*Stack, 
 
 	// Configure networking stack.
 	err := stack.s.Reset(xnet.StackConfig{
-		StaticAddress:   cfg.StaticAddress,
-		Hostname:        cfg.Hostname,
-		MaxTCPConns:     cfg.MaxTCPPorts,
-		MaxUDPConns:     cfg.MaxUDPPorts,
-		AcceptMulticast: cfg.AcceptMulticast,
-		RandSeed:        time.Now().UnixNano() ^ int64(cfg.RandSeed),
-		HardwareAddress: mac,
-		MTU:             MTU,
+		StaticAddress4:    cfg.StaticAddress4,
+		Hostname:          cfg.Hostname,
+		MaxActiveTCPPorts: cfg.MaxActiveTCPPorts,
+		MaxActiveUDPPorts: cfg.MaxActiveUDPPorts,
+		AcceptMulticast:   cfg.AcceptMulticast,
+		RandSeed:          time.Now().UnixNano() ^ int64(cfg.RandSeed),
+		HardwareAddress:   mac,
+		MTU:               MTU,
 		EthernetTxCRC32Update: func(crc uint32, b []byte) uint32 {
 			return crc32.Update(crc, crcTable, b)
 		},
+		ICMPQueueLimit: cfg.ICMPQueueLimit,
 	})
 	if err != nil {
 		return nil, err
@@ -126,7 +127,7 @@ func (stack *Stack) RecvAndSend() (send, recv int, err error) {
 		if stack.enableRxPcap {
 			stack.printPcap("RX", stack.rxbuf[:n])
 		}
-		err = stack.s.Demux(stack.rxbuf[:n], 0)
+		err = stack.s.IngressEthernet(stack.rxbuf[:n])
 		if err != nil {
 			if err != lneto.ErrPacketDrop {
 				stack.logerr("demux", err.Error()) // TODO(HEAP): real slog, 121B/11 mallocs per call
@@ -142,7 +143,7 @@ func (stack *Stack) RecvAndSend() (send, recv int, err error) {
 	}
 
 	// Check if there's data to send.
-	send, err = stack.s.Encapsulate(stack.sendbuf, -1, 0)
+	send, err = stack.s.EgressEthernet(stack.sendbuf)
 	if err != nil {
 		stack.logerr("encaps", err.Error())
 		return send, recv, err
@@ -164,7 +165,7 @@ func (stack *Stack) RecvAndSend() (send, recv int, err error) {
 }
 
 func (stack *Stack) printPcap(direction string, data []byte) {
-	stack.pcap.PrintPacket(direction, data)
+	stack.pcap.PrintEthernet(direction, data)
 }
 
 // TODO(HEAP): real slog.Logger allocates 121B/11 mallocs per call (1024-byte buffer, handler state, value boxing).

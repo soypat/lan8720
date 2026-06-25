@@ -12,6 +12,7 @@ import (
 
 	"github.com/soypat/lan8720"
 	"github.com/soypat/lan8720/examples/lannet"
+	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/phy"
 	pio "github.com/tinygo-org/pio/rp2-pio"
 	"github.com/tinygo-org/pio/rp2-pio/piolib"
@@ -100,12 +101,12 @@ func main() {
 		pollTime = 5 * time.Millisecond
 	)
 	llstack := stack.LnetoStack()
-	rstack := llstack.StackRetrying(pollTime)
+	rstack := llstack.StackRetrying(backoff)
 	results, err := rstack.DoDHCPv4(requestedIP, timeout, retries)
 	if err != nil {
 		panic("DHCP failed: " + err.Error())
 	}
-	err = stack.LnetoStack().AssimilateDHCPResults(results)
+	err = llstack.AssimilateDHCPResults(results)
 	if err != nil {
 		panic("DHCP result assimilate failed: " + err.Error())
 	}
@@ -113,10 +114,10 @@ func main() {
 	if err != nil {
 		panic("ARP resolve failed: " + err.Error())
 	}
-	llstack.SetGateway6(gatewayHW)
+	llstack.SetHardwareAddr(gatewayHW)
 	logger.Info("DHCP complete",
 		slog.String("hostname", stack.Hostname()),
-		slog.String("ourIP", results.AssignedAddr.String()),
+		slog.String("ourIP", string(ipv4.AppendFormatAddr(nil, results.AssignedAddr4))),
 		slog.String("subnet", results.Subnet.String()),
 		slog.String("router", results.Router.String()),
 		slog.String("server", results.ServerAddr.String()),
@@ -142,4 +143,8 @@ func loopForeverStack(stack *lannet.Stack) {
 			time.Sleep(5 * time.Millisecond) // No data to send or receive, sleep for a bit.
 		}
 	}
+}
+
+func backoff(consecutiveBackoffs uint) time.Duration {
+	return min(3*time.Second, 1<<min(consecutiveBackoffs, 31))
 }

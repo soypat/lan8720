@@ -12,6 +12,7 @@ import (
 
 	"github.com/soypat/lan8720"
 	"github.com/soypat/lan8720/examples/lannet"
+	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/phy"
 	"github.com/soypat/lneto/tcp"
 	mqtt "github.com/soypat/natiu-mqtt"
@@ -99,7 +100,7 @@ func main() {
 
 	stack, err := lannet.NewStack(dev, mac, lannet.StackConfig{
 		Hostname:          "http-pico",
-		MaxTCPPorts:       1,
+		MaxActiveTCPPorts: 1,
 		Logger:            logger,
 		EnableRxPcapPrint: true,
 		EnableTxPcapPrint: true,
@@ -109,7 +110,7 @@ func main() {
 	}
 	go loopForeverStack(stack)
 	llstack := stack.LnetoStack()
-	rstack := llstack.StackRetrying(netPollSleep)
+	rstack := llstack.StackRetrying(backoff)
 	results, err := rstack.DoDHCPv4([4]byte{}, dhcpTimeout, dhcpRetries)
 	if err != nil {
 		panic("DHCP failed: " + err.Error())
@@ -122,10 +123,10 @@ func main() {
 	if err != nil {
 		panic("ARP resolve failed: " + err.Error())
 	}
-	llstack.SetGateway6(gatewayHW)
+	llstack.SetGatewayHardwareAddr(gatewayHW)
 	llstack.Debug("post-dhcp")
 	logger.Info("DHCP complete",
-		slog.String("ourIP", results.AssignedAddr.String()),
+		slog.String("ourIP", string(ipv4.AppendFormatAddr(nil, results.AssignedAddr4))),
 		slog.String("router", results.Router.String()),
 		slog.String("gatewayhw", net.HardwareAddr(gatewayHW[:]).String()),
 	)
@@ -225,7 +226,7 @@ func handleConn(conn *tcp.Conn, client *mqtt.Client) {
 			if err != nil {
 				println("sending payload: ", err.Error())
 			}
-		case conn.AvailableInput() > 0:
+		case conn.FreeInput() > 0:
 			// TCP data available, try to read.
 			err = client.HandleNext()
 			if err != nil {
@@ -248,4 +249,7 @@ func loopForeverStack(stack *lannet.Stack) {
 			time.Sleep(netPollSleep)
 		}
 	}
+}
+func backoff(consecutiveBackoffs uint) time.Duration {
+	return min(3*time.Second, 1<<min(consecutiveBackoffs, 31))
 }

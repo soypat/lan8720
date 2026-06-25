@@ -21,6 +21,7 @@ import (
 	"github.com/soypat/lan8720"
 	"github.com/soypat/lan8720/examples/lannet"
 	"github.com/soypat/lneto/http/httpraw"
+	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/phy"
 	"github.com/soypat/lneto/tcp"
 	"github.com/soypat/lneto/x/xnet"
@@ -34,6 +35,7 @@ const (
 	loopSleep  = 5 * time.Millisecond
 	maxConns   = 10
 	httpBuf    = 1024
+	icmpQueue  = 2 // set to zero to disable ICMP.
 
 	// MDIO pins:
 	pinMDIO = machine.GPIO0
@@ -49,7 +51,7 @@ const (
 
 const (
 	actionMarker = "<!--A-->"
-	ntpHost      = "pool.ntp.org"
+	ntpHost      = "192.168.1.100" //"pool.ntp.org"
 )
 
 var (
@@ -105,10 +107,11 @@ func main() {
 
 	stack, err := lannet.NewStack(dev, mac, lannet.StackConfig{
 		Hostname:          "http-pico",
-		MaxTCPPorts:       1,
+		MaxActiveTCPPorts: 1,
 		Logger:            logger,
 		EnableRxPcapPrint: true,
 		EnableTxPcapPrint: true,
+		ICMPQueueLimit:    icmpQueue,
 	})
 	if err != nil {
 		panic("stack config: " + err.Error())
@@ -122,7 +125,7 @@ func main() {
 		pollTime    = 5 * time.Millisecond
 	)
 	llstack := stack.LnetoStack()
-	rstack := llstack.StackRetrying(pollTime)
+	rstack := llstack.StackRetrying(backoff)
 	results, err := rstack.DoDHCPv4(requestedIP, dhcpTimeout, dhcpRetries)
 	if err != nil {
 		panic("DHCP failed: " + err.Error())
@@ -135,10 +138,10 @@ func main() {
 	if err != nil {
 		panic("ARP resolve failed: " + err.Error())
 	}
-	llstack.SetGateway6(gatewayHW)
+	llstack.SetHardwareAddr(gatewayHW)
 	llstack.Debug("post-dhcp")
 	logger.Info("DHCP complete",
-		slog.String("ourIP", results.AssignedAddr.String()),
+		slog.String("ourIP", string(ipv4.AppendFormatAddr(nil, results.AssignedAddr4))),
 		slog.String("router", results.Router.String()),
 		slog.String("gatewayhw", net.HardwareAddr(gatewayHW[:]).String()),
 	)
@@ -180,15 +183,21 @@ func main() {
 	if err != nil {
 		panic("tcppool create: " + err.Error())
 	}
-
-	listenAddr := netip.AddrPortFrom(results.AssignedAddr, listenPort)
+	if icmpQueue > 0 {
+		println("enable ICMP")
+		err = llstack.EnableICMP(true)
+		if err != nil {
+			println("error enabling icmp:", err.Error())
+		}
+	}
+	listenAddr := netip.AddrPortFrom(netip.AddrFrom4(results.AssignedAddr4), listenPort)
 
 	var listener tcp.Listener
 	err = listener.Reset(listenPort, tcpPool)
 	if err != nil {
 		panic("listener reset: " + err.Error())
 	}
-	err = llstack.RegisterListener(&listener)
+	err = llstack.RegisterListenerTCP(&listener)
 	if err != nil {
 		panic("listener register: " + err.Error())
 	}
@@ -501,4 +510,8 @@ func loopForeverStack(stack *lannet.Stack) {
 			time.Sleep(loopSleep)
 		}
 	}
+}
+
+func backoff(consecutiveBackoffs uint) time.Duration {
+	return min(3*time.Second, 1<<min(consecutiveBackoffs, 31))
 }

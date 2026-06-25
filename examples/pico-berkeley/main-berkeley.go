@@ -5,18 +5,20 @@ package main
 // WARNING: default -scheduler=cores unsupported, compile with -scheduler=tasks set!
 
 import (
+	"context"
 	"log/slog"
 	"machine"
 	"net"
 	"net/netip"
+	"syscall"
 	"time"
 
 	"github.com/soypat/lan8720"
 	"github.com/soypat/lan8720/examples/lannet"
-	"github.com/soypat/lneto/dns"
-	"github.com/soypat/lneto/dns/mdns"
+	"github.com/soypat/lneto/http/httpraw"
 	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/phy"
+	"github.com/soypat/lneto/x/xnet"
 	pio "github.com/tinygo-org/pio/rp2-pio"
 	"github.com/tinygo-org/pio/rp2-pio/piolib"
 )
@@ -38,7 +40,19 @@ const (
 	pinTxBase = machine.GPIO7
 )
 
-const remoteHost = "blade" // The hostname we'd like to resolve via MDNS.
+var (
+	requestedIP = [4]byte{192, 168, 1, 99}
+	nanotime    = func() int64 {
+		return time.Now().UnixNano()
+	}
+)
+
+const httpBuf = 1024
+
+type connState struct {
+	hdr     httpraw.Header
+	httpBuf [httpBuf]byte
+}
 
 func main() {
 	time.Sleep(1 * time.Second) // Give time to connect to USB and monitor output.
@@ -85,9 +99,8 @@ func main() {
 	// Create networking stack.
 	stack, err := lannet.NewStack(dev, mac, lannet.StackConfig{
 		Hostname:          "pico-eth",
+		MaxActiveTCPPorts: 4,
 		Logger:            logger,
-		MaxActiveUDPPorts: 1,
-		AcceptMulticast:   true,
 		EnableRxPcapPrint: true,
 		EnableTxPcapPrint: true,
 	})
@@ -105,90 +118,69 @@ func main() {
 	)
 	llstack := stack.LnetoStack()
 	rstack := llstack.StackRetrying(backoff)
-	results, err := rstack.DoDHCPv4([4]byte{}, timeout, retries)
+	results, err := rstack.DoDHCPv4(requestedIP, timeout, retries)
 	if err != nil {
 		panic("DHCP failed: " + err.Error())
 	}
-	err = stack.LnetoStack().AssimilateDHCPResults(results)
+	err = llstack.AssimilateDHCPResults(results)
 	if err != nil {
 		panic("DHCP result assimilate failed: " + err.Error())
 	}
+	println("DHCP done. Addr:", string(ipv4.AppendFormatAddr(nil, results.AssignedAddr4)))
 	gatewayHW, err := rstack.DoResolveHardwareAddress6(results.Router, 500*time.Millisecond, 4)
 	if err != nil {
 		panic("ARP resolve failed: " + err.Error())
 	}
 	llstack.SetGatewayHardwareAddr(gatewayHW)
-	logger.Info("DHCP complete",
-		slog.String("hostname", stack.Hostname()),
-		slog.String("ourIP", string(ipv4.AppendFormatAddr(nil, results.AssignedAddr4))),
-		slog.String("subnet", results.Subnet.String()),
-		slog.String("router", results.Router.String()),
-		slog.String("server", results.ServerAddr.String()),
-		slog.String("broadcast", results.BroadcastAddr.String()),
-		slog.String("gateway", results.Gateway.String()),
-		slog.String("gatewayhw", net.HardwareAddr(gatewayHW[:]).String()),
-		slog.Uint64("lease[seconds]", uint64(results.TLease)),
-		slog.Uint64("rebind[seconds]", uint64(results.TRebind)),
-		slog.Uint64("renew[seconds]", uint64(results.TRenewal)),
-		slog.Any("DNS-servers", results.DNSServers),
-	)
 
-	addr4 := llstack.Addr4()
-	// MDNS for locating local domains.
-	var mdnsclient mdns.Client
-	multicast := [4]byte{224, 0, 0, 251}
-	err = mdnsclient.Configure(mdns.ClientConfig{
-		LocalPort:     mdns.Port,
-		MulticastAddr: multicast[:],
-		Services: []mdns.Service{
-			{
-				Host: dns.MustNewName(llstack.Hostname() + ".local"),
-				Addr: addr4[:],
-			},
+	berkstack := llstack.StackGo(backoff, xnet.StackGoConfig{
+		ListenerPoolConfig: xnet.TCPPoolConfig{
+			PoolSize:           4, // 4 max connections
+			QueueSize:          4,
+			TxBufSize:          2048,
+			RxBufSize:          2048,
+			EstablishedTimeout: 4 * time.Second,
+			ClosingTimeout:     2 * time.Second,
+			NanoTime:           nanotime,
 		},
 	})
+	// passive TCP listen, raddr is nil.
+	// raddr := &net.TCPAddr{
+	// 	IP:   []byte{192, 168, 1, 53},
+	// 	Port: 80,
+	// }
+	laddr := netip.AddrPortFrom(netip.AddrFrom4(results.AssignedAddr4), 80)
+	laddrString := laddr.String()
+	println("prepare to listen on socket", laddrString)
+
+	const sockstream = 0x1
+	iconn, err := berkstack.SocketNetip(context.Background(), "tcp", syscall.AF_INET, sockstream, laddr, netip.AddrPort{})
 	if err != nil {
-		panic("MDNS config failed: " + err.Error())
+		println("socket err:", err.Error())
+		panic("failed on socket listen")
 	}
-	err = llstack.RegisterUDP4(&mdnsclient, [4]byte{}, mdns.Port)
-	if err != nil {
-		panic("MDNS register failed: " + err.Error())
-	}
-	llstack.Debug("startmdns")
-	err = mdnsclient.StartResolve(mdns.ResolveConfig{
-		MaxResponseAnswers: 1,
-		Questions: []dns.Question{
-			{
-				Name:  dns.MustNewName(remoteHost + ".local"),
-				Type:  dns.TypeA,
-				Class: dns.ClassINET,
-			},
-		},
-	})
-	if err != nil {
-		panic("mdns start resolve failed:" + err.Error())
-	}
-	deadline := time.Now().Add(4 * time.Second)
-	var answer [1]dns.Resource
+
+	listener := iconn.(net.Listener)
+	var buf [1024]byte
 	for {
-		n, done, err := mdnsclient.AnswersCopyTo(answer[:])
-		if done {
-			if err != nil && n == 0 {
-				panic("MDNS failed: " + err.Error())
-			}
-			break
-		} else if time.Since(deadline) > 0 {
-			panic("MDNS time out")
-		}
 		time.Sleep(pollTime)
+		conn, err := listener.Accept()
+		if err != nil {
+			println("accept error:", err.Error())
+			continue
+		}
+		n, err := conn.Read(buf[:])
+		if err != nil {
+			println("read error:", err.Error())
+		}
+		if n > 0 {
+			conn.Write(buf[:n])
+		}
+		time.Sleep(50 * time.Millisecond)
+		conn.Close()
+		time.Sleep(50 * time.Millisecond)
+		println("close conn")
 	}
-
-	addr, ok := netip.AddrFromSlice(answer[0].RawData())
-	if !ok {
-		panic("invalid MDNS address answer")
-	}
-	println("Address discovered for", remoteHost, addr.String())
-	select {} // keep stack running serving MDNS hostname.
 }
 
 func loopForeverStack(stack *lannet.Stack) {
