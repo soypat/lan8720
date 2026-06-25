@@ -114,7 +114,7 @@ func main() {
 	if err != nil {
 		panic("ARP resolve failed: " + err.Error())
 	}
-	llstack.SetHardwareAddr(gatewayHW)
+	llstack.SetGatewayHardwareAddr(gatewayHW)
 	logger.Info("DHCP complete",
 		slog.String("hostname", stack.Hostname()),
 		slog.String("ourIP", string(ipv4.AppendFormatAddr(nil, results.AssignedAddr4))),

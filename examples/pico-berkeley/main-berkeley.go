@@ -15,6 +15,7 @@ import (
 
 	"github.com/soypat/lan8720"
 	"github.com/soypat/lan8720/examples/lannet"
+	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/http/httpraw"
 	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/phy"
@@ -142,6 +143,7 @@ func main() {
 			EstablishedTimeout: 4 * time.Second,
 			ClosingTimeout:     2 * time.Second,
 			NanoTime:           nanotime,
+			NewBackoff:         func() lneto.BackoffStrategy { return backoff },
 		},
 	})
 	// passive TCP listen, raddr is nil.

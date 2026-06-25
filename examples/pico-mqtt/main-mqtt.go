@@ -149,6 +149,7 @@ func main() {
 		TxBuf:             make([]byte, 1024),
 		TxPacketQueueSize: 3,
 		Logger:            logger,
+		RWBackoff:         backoff,
 	})
 	if err != nil {
 		panic("TCP config: " + err.Error())

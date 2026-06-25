@@ -20,6 +20,7 @@ import (
 
 	"github.com/soypat/lan8720"
 	"github.com/soypat/lan8720/examples/lannet"
+	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/http/httpraw"
 	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/phy"
@@ -138,7 +139,7 @@ func main() {
 	if err != nil {
 		panic("ARP resolve failed: " + err.Error())
 	}
-	llstack.SetHardwareAddr(gatewayHW)
+	llstack.SetGatewayHardwareAddr(gatewayHW)
 	llstack.Debug("post-dhcp")
 	logger.Info("DHCP complete",
 		slog.String("ourIP", string(ipv4.AppendFormatAddr(nil, results.AssignedAddr4))),
@@ -147,16 +148,20 @@ func main() {
 	)
 
 	// DNS lookup for NTP server.
-	logger.Info("resolving NTP host", slog.String("host", ntpHost))
-	addrs, err := rstack.DoLookupIP(ntpHost, 5*time.Second, 3)
+	ntpaddr, err := netip.ParseAddr(ntpHost)
 	if err != nil {
-		panic("DNS lookup failed: " + err.Error())
+		logger.Info("resolving NTP host", slog.String("host", ntpHost))
+		addrs, err := rstack.DoLookupIP(ntpHost, 5*time.Second, 3)
+		if err != nil {
+			panic("DNS lookup failed: " + err.Error())
+		}
+		ntpaddr = addrs[0]
 	}
-	logger.Info("DNS resolved", slog.String("addr", addrs[0].String()))
+	logger.Info("DNS resolved", slog.String("addr", ntpaddr.String()))
 
 	// Perform NTP request.
 	logger.Info("starting NTP request")
-	offset, err := rstack.DoNTP(addrs[0], 5*time.Second, 3)
+	offset, err := rstack.DoNTP(ntpaddr, 5*time.Second, 3)
 	if err != nil {
 		panic("NTP failed: " + err.Error())
 	}
@@ -174,6 +179,7 @@ func main() {
 		RxBufSize:          1024,
 		EstablishedTimeout: 5 * time.Second,
 		ClosingTimeout:     5 * time.Second,
+		NewBackoff:         func() lneto.BackoffStrategy { return backoff },
 		NewUserData: func() any {
 			cs := new(connState)
 			cs.hdr.Reset(cs.httpBuf[:])
