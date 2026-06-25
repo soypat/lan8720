@@ -357,7 +357,8 @@ func parseCallsignValue(query []byte) []byte {
 func sanitizeCallsign(dst, raw []byte) []byte {
 	dst = dst[:0]
 	for _, b := range raw {
-		if (b < 'A' || b > 'Z') && (b < 'a' || b > 'z') {
+		isAlpha := (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
+		if !isAlpha && b != '.' && b != '_' {
 			break
 		}
 		dst = append(dst, b)
