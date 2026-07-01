@@ -116,6 +116,12 @@ func (stack *Stack) LnetoStack() *xnet.StackAsync {
 	return &stack.s
 }
 
+// Debug forwards to the underlying StackAsync for allocation/debug instrumentation.
+func (stack *Stack) Debug(msg string) { stack.s.Debug(msg) }
+
+// DebugErr forwards to the underlying StackAsync for allocation/debug instrumentation.
+func (stack *Stack) DebugErr(msg, err string) { stack.s.DebugErr(msg, err) }
+
 func (stack *Stack) RecvAndSend() (send, recv int, err error) {
 	dev := stack.dev
 

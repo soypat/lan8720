@@ -64,7 +64,7 @@ var (
 )
 
 func main() {
-	time.Sleep(2 * time.Second)
+	time.Sleep(1 * time.Second)
 	println("starting HTTP server example")
 	logger := slog.New(slog.NewTextHandler(machine.Serial, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
@@ -242,8 +242,11 @@ type connState struct {
 	hdr     httpraw.Header
 	httpBuf [httpBuf]byte
 	buf     [128]byte
-	dynBuf  [256]byte
-	csBuf   [9]byte
+	// dynBuf holds the rendered action list. 16 actions * ~44 bytes + <ul></ul>
+	// reaches ~720 bytes; size to 1024 so AppendActionsHTML never reallocates
+	// (a [256]byte grew to 512 per landing request).
+	dynBuf [1024]byte
+	csBuf  [9]byte
 }
 
 type connJob struct {
@@ -341,17 +344,50 @@ func appendDurationAgo(dst []byte, d time.Duration) []byte {
 	return dst
 }
 
+// callsignKey is the query key searched by parseCallsignValue, kept as a
+// package-level []byte so the search does not do a per-call string->[]byte
+// conversion (which heap-allocates on every /toggle-led request).
+var callsignKey = []byte("callsign=")
+
 func parseCallsignValue(query []byte) []byte {
-	const key = "callsign="
-	idx := bytes.Index(query, []byte(key))
+	idx := bytesIndex(query, callsignKey)
 	if idx < 0 || (idx > 0 && query[idx-1] != '&') {
 		return nil
 	}
-	val := query[idx+len(key):]
+	val := query[idx+len(callsignKey):]
 	if end := bytes.IndexByte(val, '&'); end >= 0 {
 		val = val[:end]
 	}
 	return val
+}
+
+// bytesIndex returns the index of the first occurrence of sep in s, or -1 if
+// absent. It is an allocation-free replacement for bytes.Index, whose multi-byte
+// path heap-allocates on TinyGo (single-byte bytes.IndexByte does not).
+func bytesIndex(s, sep []byte) int {
+	if len(sep) == 0 {
+		return 0
+	}
+	if len(sep) > len(s) {
+		return -1
+	}
+	c0 := sep[0]
+	for i := 0; i+len(sep) <= len(s); i++ {
+		if s[i] != c0 {
+			continue
+		}
+		match := true
+		for j := 1; j < len(sep); j++ {
+			if s[i+j] != sep[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return i
+		}
+	}
+	return -1
 }
 
 func sanitizeCallsign(dst, raw []byte) []byte {
