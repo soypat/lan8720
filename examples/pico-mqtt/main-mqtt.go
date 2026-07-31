@@ -1,3 +1,5 @@
+//go:build rp2040 || rp2350
+
 package main
 
 import (
