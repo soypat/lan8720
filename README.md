@@ -6,7 +6,7 @@
 
 LAN 8720 driver for the Go programming language.
 
-Currently hosting a server with the setup below at [`http://gsan.whittileaks.com`](http://gsan.whittileaks.com) 
+Currently hosting a server with the setup below at [`http://lneto.whittileaks.com`](http://lneto.whittileaks.com) 
 
 Server is HTTP only! Make sure your browser does not automatically put `https://` in your address bar! Change it manually if it does to access website.
 
