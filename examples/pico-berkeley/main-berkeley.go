@@ -16,7 +16,6 @@ import (
 	"github.com/soypat/lan8720"
 	"github.com/soypat/lan8720/examples/lannet"
 	"github.com/soypat/lneto"
-	"github.com/soypat/lneto/http/httpraw"
 	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/phy"
 	"github.com/soypat/lneto/x/xnet"
@@ -47,13 +46,6 @@ var (
 		return time.Now().UnixNano()
 	}
 )
-
-const httpBuf = 1024
-
-type connState struct {
-	hdr     httpraw.Header
-	httpBuf [httpBuf]byte
-}
 
 func main() {
 	time.Sleep(1 * time.Second) // Give time to connect to USB and monitor output.

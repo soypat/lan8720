@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -21,7 +22,7 @@ import (
 	"github.com/soypat/lan8720"
 	"github.com/soypat/lan8720/examples/lannet"
 	"github.com/soypat/lneto"
-	"github.com/soypat/lneto/http/httpraw"
+	"github.com/soypat/lneto/http/httphi"
 	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/phy"
 	"github.com/soypat/lneto/tcp"
@@ -34,9 +35,18 @@ const (
 	linkmode   = phy.Link100FDX
 	listenPort = 80
 	loopSleep  = 5 * time.Millisecond
-	maxConns   = 10
-	httpBuf    = 1024
+	maxConns   = 6
 	icmpQueue  = 2 // set to zero to disable ICMP.
+
+	// reqHdrBuf bounds the request header a single exchange may hold; a request
+	// whose header exceeds it is failed rather than accumulated.
+	reqHdrBuf = 1024
+	// respHdrBuf is the minimum room reserved for staged response headers.
+	// Unused request header memory is reused on top of it.
+	respHdrBuf = 128
+	// connTimeout bounds a whole exchange: the router's read loop backs off on an
+	// idle connection forever otherwise.
+	connTimeout = 8 * time.Second
 
 	// MDIO pins:
 	pinMDIO = machine.GPIO0
@@ -180,11 +190,6 @@ func main() {
 		EstablishedTimeout: 5 * time.Second,
 		ClosingTimeout:     5 * time.Second,
 		NewBackoff:         func() lneto.BackoffStrategy { return backoff },
-		NewUserData: func() any {
-			cs := new(connState)
-			cs.hdr.Reset(cs.httpBuf[:])
-			return cs
-		},
 	})
 	if err != nil {
 		panic("tcppool create: " + err.Error())
@@ -208,60 +213,125 @@ func main() {
 		panic("listener register: " + err.Error())
 	}
 
+	// server outlives main's frame via the mux, so it is heap allocated once here
+	// rather than living as a package-level global.
+	server := &Server{}
+	var mux httphi.MuxSlice
+	mux.Reset(2)
+	mux.Handle("GET /", server.HandleLanding)
+	mux.Handle("GET /toggle-led", server.HandleToggleLED)
+
+	var router httphi.Router
+	err = router.Configure(httphi.RouterConfig{
+		// Fixed worker mode: goroutines and exchange buffers are allocated here
+		// and never again, so serving load costs no heap.
+		FixedNumGoroutines:          maxConns,
+		RequestHeaderBufferSize:     reqHdrBuf,
+		ResponseHeaderMinBufferSize: respHdrBuf,
+		RequestNumHeaderKVCap:       16,
+		Mux:                         &mux,
+		Logger:                      logger,
+	})
+	if err != nil {
+		panic("router configure: " + err.Error())
+	}
+
 	logger.Info("listening", slog.String("addr", "http://"+listenAddr.String()))
 	llstack.Debug("init-complete")
 
-	// Pre-allocate worker goroutines so stacks are allocated once at startup
-	// instead of per-connection. Maintains full concurrency up to maxConns.
-	jobCh := make(chan connJob, maxConns)
-	for range maxConns {
-		go connWorker(jobCh)
-	}
-	llstack.Debug("goroutines allocated")
 	for {
 		if listener.NumberOfReadyToAccept() == 0 {
 			time.Sleep(loopSleep)
 			tcpPool.CheckTimeouts()
 			continue
 		}
-
-		conn, userData, err := listener.TryAccept()
+		conn, _, err := listener.TryAccept()
 		if err != nil {
 			logger.Error("listener accept:", slog.String("err", err.Error())) // TODO(HEAP): real slog allocates 121B/11 mallocs
 			time.Sleep(time.Second)
 			continue
 		}
-		jobCh <- connJob{conn: conn, cs: userData.(*connState), stack: llstack}
+		remoteAddr, _ := netip.AddrFromSlice(conn.RemoteAddr())
+		print("incoming connection: ")
+		printAddr(remoteAddr)
+		println(" from port", conn.RemotePort())
+
+		// The router's read loop backs off indefinitely on a silent peer, the
+		// deadline is what bounds the exchange.
+		conn.SetDeadline(time.Now().Add(connTimeout))
+		err = router.Handle(conn)
+		if err != nil {
+			// Router refused the connection (no free exchange or full queue): it
+			// left conn untouched, so disposing of it is ours to do.
+			stack.DebugErr("router failed to handle", err.Error())
+			conn.Close()
+		}
 	}
 }
 
-// connState holds all per-connection buffers, pre-allocated during pool init.
-// Eliminates per-connection heap escapes of local arrays (buf, dynBuf, csBuf)
-// and the make([]byte, httpBuf) that exceeds TinyGo's 256-byte stack limit.
-type connState struct {
-	hdr     httpraw.Header
-	httpBuf [httpBuf]byte
-	buf     [128]byte
-	// dynBuf holds the rendered action list. 16 actions * ~44 bytes + <ul></ul>
-	// reaches ~720 bytes; size to 1024 so AppendActionsHTML never reallocates
-	// (a [256]byte grew to 512 per landing request).
-	dynBuf [1024]byte
-	csBuf  [9]byte
+// Server owns everything the HTTP handlers touch: the LED action log and the
+// scratch memory they build responses in. One instance lives for the program's
+// life, so its handlers are method values registered once on the mux.
+type Server struct {
+	state     ServerState
+	scratches [maxConns]scratch
 }
 
-type connJob struct {
-	conn  *tcp.Conn
-	cs    *connState
-	stack *xnet.StackAsync
+// acquireScratch claims a free scratch buffer, or nil if every one is in use. Sized to
+// maxConns, one per router worker, so it never fails in practice.
+func (sv *Server) acquireScratch() *scratch {
+	for i := range sv.scratches {
+		if sv.scratches[i].inUse.CompareAndSwap(false, true) {
+			return &sv.scratches[i]
+		}
+	}
+	return nil
 }
 
-type page uint8
+func (sv *Server) HandleLanding(ex *httphi.Exchange) {
+	sc := sv.acquireScratch()
+	if sc == nil {
+		ex.WriteHeader(httphi.StatusServiceUnavailable)
+		return
+	}
+	defer sc.release()
+	println("Got webpage request!")
 
-const (
-	pageNotExists page = iota
-	pageLanding
-	pageToggleLED
-)
+	dynContent := sv.state.AppendActionsHTML(sc.dyn[:0])
+	ex.StageStatus(int(httphi.StatusOK))
+	ex.StageHeader("Content-Type", "text/html")
+	ex.StageHeaderInt("Content-Length", int64(len(htmlTemplate)+len(dynContent)))
+	// We close the connection on exchange end. Omitting Connection:close means
+	// notably slower paint times in the browser, and it needs the Content-Length
+	// above to know the body ended.
+	ex.StageHeader("Connection", "close")
+	ex.WriteBody(htmlTemplate[:htmlActionIdx])
+	ex.WriteBody(dynContent)
+	ex.WriteBody(htmlTemplate[htmlActionIdx:])
+}
+
+func (sv *Server) HandleToggleLED(ex *httphi.Exchange) {
+	println("got toggle led request")
+	// AppendQuery decodes percent escapes and '+' for us; sc.cs is sized so the
+	// decode never needs to grow the slice onto the heap.
+	rawCallsign, _ := ex.RequestQueryValue("callsign")
+	sv.state.RecordToggle(trimSanitized(rawCallsign))
+	ex.Respond(200, "", nil)
+}
+
+// scratch is per-in-flight-request working memory for handlers. The router's
+// exchange buffer cannot serve as scratch: staged response headers are written
+// into it, and the landing page needs its dynamic section fully built to know
+// the Content-Length to stage.
+//
+// Claim one with [Server.acquire].
+type scratch struct {
+	inUse atomic.Bool
+	dyn   [768]byte // Dynamic HTML section of the landing page.
+	cs    [192]byte // Decoded callsign query parameter.
+}
+
+func (sc *scratch) release() { sc.inUse.Store(false) }
 
 // ServerState stores the state of the HTTP server. It has a ring buffer with last 8 actions
 // performed. Every time a new action is performed it replaces the oldest action by advancing the ring buffer.
@@ -279,9 +349,10 @@ type Action struct {
 	TurnedLEDOn bool
 }
 
-var state ServerState
-
 func (s *ServerState) RecordToggle(callsign []byte) {
+	if len(callsign) == 0 {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.LEDState = !s.LEDState
@@ -344,206 +415,22 @@ func appendDurationAgo(dst []byte, d time.Duration) []byte {
 	return dst
 }
 
-// callsignKey is the query key searched by parseCallsignValue, kept as a
-// package-level []byte so the search does not do a per-call string->[]byte
-// conversion (which heap-allocates on every /toggle-led request).
-var callsignKey = []byte("callsign=")
-
-func parseCallsignValue(query []byte) []byte {
-	idx := bytesIndex(query, callsignKey)
-	if idx < 0 || (idx > 0 && query[idx-1] != '&') {
-		return nil
-	}
-	val := query[idx+len(callsignKey):]
-	if end := bytes.IndexByte(val, '&'); end >= 0 {
-		val = val[:end]
-	}
-	return val
-}
-
-// bytesIndex returns the index of the first occurrence of sep in s, or -1 if
-// absent. It is an allocation-free replacement for bytes.Index, whose multi-byte
-// path heap-allocates on TinyGo (single-byte bytes.IndexByte does not).
-func bytesIndex(s, sep []byte) int {
-	if len(sep) == 0 {
-		return 0
-	}
-	if len(sep) > len(s) {
-		return -1
-	}
-	c0 := sep[0]
-	for i := 0; i+len(sep) <= len(s); i++ {
-		if s[i] != c0 {
-			continue
-		}
-		match := true
-		for j := 1; j < len(sep); j++ {
-			if s[i+j] != sep[j] {
-				match = false
-				break
-			}
-		}
-		if match {
-			return i
-		}
-	}
-	return -1
-}
-
-func sanitizeCallsign(dst, raw []byte) []byte {
-	dst = dst[:0]
-	for _, b := range raw {
+func trimSanitized(raw []byte) []byte {
+	for i, b := range raw {
 		isAlpha := (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
-		if !isAlpha && b != '.' && b != '_' {
-			break
-		}
-		dst = append(dst, b)
-		if len(dst) >= 4 {
-			break
+		if i >= 4 || (!isAlpha && b != '.' && b != '_') {
+			return raw[:i]
 		}
 	}
-	if len(dst) == 0 {
-		dst = append(dst, "(unknown)"...)
-	}
-	return dst
+	return raw
 }
 
-func connWorker(ch <-chan connJob) {
-	for job := range ch {
-		handleConn(job.conn, job.cs, job.stack)
-	}
-}
-
-func handleConn(conn *tcp.Conn, cs *connState, stack *xnet.StackAsync) {
-	defer conn.Close()
-	const AsRequest = false
-	hdr := &cs.hdr
-	hdr.Reset(nil)
-	buf := cs.buf[:]
-
-	stack.Debug("conn-start")
-	conn.SetDeadline(time.Now().Add(8 * time.Second))
-	remoteAddr, _ := netip.AddrFromSlice(conn.RemoteAddr())
-	print("incoming connection: ")
-	printAddr(remoteAddr, buf[:0])
-	println(" from port", conn.RemotePort())
-	stack.Debug("post-deadline+println")
-
-	for {
-		n, err := conn.Read(buf)
-		if n > 0 {
-			hdr.ReadFromBytes(buf[:n])
-			needMoreData, err := hdr.TryParse(AsRequest)
-			if err != nil && !needMoreData {
-				println("parsing HTTP request:", err.Error())
-				return
-			}
-			if !needMoreData {
-				break
-			}
-		}
-		if err != nil {
-			println("read error:", err.Error())
-			return
-		}
-		closed := conn.State() != tcp.StateEstablished
-		if closed {
-			break
-		} else if hdr.BufferReceived() >= httpBuf {
-			println("too much HTTP data")
-			return
-		}
-	}
-	// BEGIN PARSING REQUEST.
-	uri := hdr.RequestURI()
-	uriPath := uri
-	var uriQuery []byte
-	if qIdx := bytes.IndexByte(uri, '?'); qIdx >= 0 {
-		uriPath = uri[:qIdx]
-		uriQuery = uri[qIdx+1:]
-	}
-
-	var requestedPage page
-	switch {
-	case bytesEqual(uriPath, "/"):
-		println("Got webpage request!")
-		requestedPage = pageLanding
-	case bytesEqual(uriPath, "/toggle-led"):
-		println("got toggle led request")
-		requestedPage = pageToggleLED
-		callsign := sanitizeCallsign(cs.csBuf[:0], parseCallsignValue(uriQuery))
-		state.RecordToggle(callsign)
-	}
-
-	stack.Debug("post-read-loop")
-	// BEGIN RESPONSE.
-	// Reuse header to write response.
-	hdr.Reset(nil)
-	stack.Debug("post-reset")
-	hdr.SetProtocol("HTTP/1.1")
-	stack.Debug("post-setproto")
-	if requestedPage == pageNotExists {
-		hdr.SetStatus("404", "Not Found")
-	} else {
-		hdr.SetStatus("200", "OK")
-	}
-	stack.Debug("post-setstatus")
-	// We call Close() on exiting this function.
-	// If we omit Connection:close in header we'll have notably slower paint times in browser.
-	// One thing to keep in mind when using Connection:close is using Content-Length to prevent early browser close.
-	hdr.Set("Connection", "close")
-	stack.Debug("post-set-conn-close")
-	switch requestedPage {
-	case pageLanding:
-		dynContent := state.AppendActionsHTML(cs.dynBuf[:0])
-		contentLength := len(htmlTemplate) + len(dynContent)
-		buf = strconv.AppendUint(buf[:0], uint64(contentLength), 10)
-		stack.Debug("post-appendhtml")
-		hdr.Set("Content-Type", "text/html")
-		hdr.SetBytes("Content-Length", buf)
-		responseHeader, err := hdr.AppendResponse(buf[:0])
-		if err != nil {
-			println("error appending:", err.Error())
-		}
-		conn.Write(responseHeader)
-		conn.Write(htmlTemplate[:htmlActionIdx])
-		conn.Write(dynContent)
-		conn.Write(htmlTemplate[htmlActionIdx:])
-		time.Sleep(loopSleep)
-
-	case pageToggleLED:
-		hdr.Set("Content-Length", "0")
-		responseHeader, err := hdr.AppendResponse(buf[:0])
-		if err != nil {
-			println("error appending:", err.Error())
-		}
-		conn.Write(responseHeader)
-
-	default:
-		responseHeader, err := hdr.AppendResponse(buf[:0])
-		if err != nil {
-			println("error appending:", err.Error())
-		}
-		conn.Write(responseHeader)
-	}
-	stack.Debug("pre-close")
-}
-
-// printAddr prints a netip.Addr without heap allocation by formatting into buf.
-func printAddr(addr netip.Addr, buf []byte) {
-	buf = addr.AppendTo(buf[:0])
-	print(unsafe.String(&buf[0], len(buf)))
-}
-
-// bytesEqual compares a byte slice to a string without heap allocation.
-func bytesEqual(b []byte, s string) bool {
-	if len(b) != len(s) {
-		return false
-	}
-	if len(b) == 0 {
-		return true
-	}
-	return unsafe.String(&b[0], len(b)) == s
+// printAddr prints a netip.Addr without heap allocation by formatting into a
+// stack buffer.
+func printAddr(addr netip.Addr) {
+	var buf [48]byte
+	b := addr.AppendTo(buf[:0])
+	print(unsafe.String(&b[0], len(b)))
 }
 
 func loopForeverStack(stack *lannet.Stack) {

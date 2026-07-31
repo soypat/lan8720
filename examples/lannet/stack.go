@@ -82,6 +82,7 @@ func NewStack(dev *lan8720.DeviceSingle, mac [6]byte, cfg StackConfig) (*Stack, 
 			return crc32.Update(crc, crcTable, b)
 		},
 		ICMPQueueLimit: cfg.ICMPQueueLimit,
+		// Logger:         cfg.Logger,
 	})
 	if err != nil {
 		return nil, err
@@ -133,10 +134,17 @@ func (stack *Stack) RecvAndSend() (send, recv int, err error) {
 		if stack.enableRxPcap {
 			stack.printPcap("RX", stack.rxbuf[:n])
 		}
+		// HEAP: markers bracketing the demux error path. Each demux error costs a
+		// deterministic 209B/19 mallocs; these localise it. The baseline marker must
+		// stay silent on the normal path, so any output from it is itself a finding.
+		logAllocs("rx:pre-ingress")
 		err = stack.s.IngressEthernet(stack.rxbuf[:n])
+		logAllocs("rx:post-ingress")
 		if err != nil {
 			if err != lneto.ErrPacketDrop {
-				stack.logerr("demux", err.Error()) // TODO(HEAP): real slog, 121B/11 mallocs per call
+				errstr := err.Error()
+				logAllocs("rx:post-errstring")
+				stack.logerr("demux", errstr)
 			} else {
 				println("packet drop")
 			}
@@ -174,15 +182,19 @@ func (stack *Stack) printPcap(direction string, data []byte) {
 	stack.pcap.PrintEthernet(direction, data)
 }
 
-// TODO(HEAP): real slog.Logger allocates 121B/11 mallocs per call (1024-byte buffer, handler state, value boxing).
 func (stack *Stack) logerr(msg string, err string, attrs ...slog.Attr) {
-	if stack.log != nil {
-		stack.s.DebugErr(msg, err)
-	}
+	// Forward unconditionally: DebugErr runs the heap allocation probe before it
+	// gates on the logger, so skipping it here would also skip the measurement.
+	stack.Debug("rx:pre-debugerr")
+	stack.s.DebugErr(msg, err)
 }
 
 type serialWriter struct{}
 
 func (serialWriter) Write(b []byte) (int, error) {
 	return machine.Serial.Write(b)
+}
+
+func logAllocs(msg string) {
+	xnet.LogAllocs(msg)
 }
